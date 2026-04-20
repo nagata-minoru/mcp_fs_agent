@@ -17,9 +17,7 @@ import ollama
 
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
-ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
-# モデルがサブコマンドを1つの文字列で渡す場合（例: "git init"）にも対応するためプレフィックスマッチを追加
-ALLOW_PATTERNS = os.environ.get("ALLOW_PATTERNS", ",".join(ALLOW_COMMANDS.split(",")))
+ALLOW_PATTERNS = os.environ.get("ALLOW_PATTERNS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
@@ -42,7 +40,7 @@ async def run():
   shell_params = StdioServerParameters(
     command="uvx",
     args=["mcp-shell-server"],
-    env={**os.environ, "ALLOW_COMMANDS": ALLOW_COMMANDS, "ALLOW_PATTERNS": ALLOW_PATTERNS},
+    env={**os.environ, "ALLOW_PATTERNS": ALLOW_PATTERNS},
     cwd=CWD,
   )
 
@@ -65,7 +63,7 @@ async def run():
           all_tools = mcp_tools_to_ollama(fs_tools + sh_tools)
           print(f"[利用可能ツール] {list(tool_registry.keys())}")
           print(f"[対象ディレクトリ] {CWD}")
-          print(f"[許可コマンド] {ALLOW_COMMANDS}")
+          print(f"[許可コマンド] {ALLOW_PATTERNS}")
           print("終了するには 'exit' または Ctrl+C\n")
 
           messages: list[dict] = [
