@@ -3,16 +3,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from mcp_fs_agent import mcp_tools_to_ollama, run
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
-  """テスト用のMCPツールモックを生成する。"""
   tool = MagicMock()
   tool.name = name
   tool.description = description
   tool.inputSchema = input_schema
   return tool
 
-class TestMcpToolsToOllama:
-  """mcp_tools_to_ollama のユニットテスト。"""
+def make_stdio_mock():
+  m = MagicMock()
+  m.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
+  m.__aexit__ = AsyncMock(return_value=False)
+  return m
 
+def make_session_mock(tools: list) -> AsyncMock:
+  tools_result = MagicMock()
+  tools_result.tools = tools
+  session = AsyncMock()
+  session.list_tools.return_value = tools_result
+  cm = AsyncMock()
+  cm.__aenter__ = AsyncMock(return_value=session)
+  cm.__aexit__ = AsyncMock(return_value=False)
+  return cm, session
+
+class TestMcpToolsToOllama:
   def test_単一ツールを変換できる(self):
     schema = {"type": "object", "properties": {"path": {"type": "string"}}}
     tools = [make_mcp_tool("read_file", "ファイルを読む", schema)]
@@ -49,69 +62,43 @@ class TestMcpToolsToOllama:
     assert result[0]["function"]["parameters"] is schema
 
 class TestRun:
-  """run() の統合テスト（外部依存はモック）。"""
-
   @pytest.mark.asyncio
   async def test_exitで終了する(self):
-    """'exit' 入力でループを抜けることを確認する。"""
-    mcp_tool = make_mcp_tool("read_file", "読む", {})
-
-    mock_tools_result = MagicMock()
-    mock_tools_result.tools = [mcp_tool]
-
-    mock_session = AsyncMock()
-    mock_session.list_tools.return_value = mock_tools_result
+    fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
+    sh_cm, _ = make_session_mock([make_mcp_tool("execute_command", "実行", {})])
 
     mock_msg = MagicMock()
     mock_msg.content = "こんにちは"
     mock_msg.tool_calls = None
-    mock_response = MagicMock()
-    mock_response.message = mock_msg
 
     with (
-      patch("mcp_fs_agent.stdio_client") as mock_stdio,
-      patch("mcp_fs_agent.ollama.chat", return_value=mock_response),
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", return_value=MagicMock(message=mock_msg)),
       patch("builtins.input", side_effect=["exit"]),
       patch("builtins.print"),
     ):
-      mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
-      mock_stdio.return_value.__aexit__ = AsyncMock(return_value=False)
-
-      mock_cm = AsyncMock()
-      mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
-      mock_cm.__aexit__ = AsyncMock(return_value=False)
-
-      with patch("mcp_fs_agent.ClientSession", return_value=mock_cm):
-        await run()
+      await run()
 
   @pytest.mark.asyncio
-  async def test_ツール呼び出しを実行しモデルに結果を返す(self):
-    """モデルがツール呼び出しを返した場合にMCPを呼び出すことを確認する。"""
-    mcp_tool = make_mcp_tool("read_file", "読む", {})
-
-    mock_tools_result = MagicMock()
-    mock_tools_result.tools = [mcp_tool]
+  async def test_ファイルシステムツールはfsセッションで実行される(self):
+    fs_tool = make_mcp_tool("read_file", "読む", {})
+    sh_tool = make_mcp_tool("execute_command", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, sh_session = make_session_mock([sh_tool])
 
     mock_tool_content = MagicMock()
     mock_tool_content.text = "ファイルの内容"
     mock_tool_result = MagicMock()
     mock_tool_result.content = [mock_tool_content]
-
-    mock_session = AsyncMock()
-    mock_session.list_tools.return_value = mock_tools_result
-    mock_session.call_tool.return_value = mock_tool_result
+    fs_session.call_tool.return_value = mock_tool_result
 
     mock_tc = MagicMock()
     mock_tc.function.name = "read_file"
     mock_tc.function.arguments = {"path": "hello.txt"}
 
-    msg_with_tool = MagicMock()
-    msg_with_tool.content = ""
-    msg_with_tool.tool_calls = [mock_tc]
-
-    msg_final = MagicMock()
-    msg_final.content = "読みました"
-    msg_final.tool_calls = None
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_final = MagicMock(content="読みました", tool_calls=None)
 
     responses = iter([
       MagicMock(message=msg_with_tool),
@@ -119,19 +106,50 @@ class TestRun:
     ])
 
     with (
-      patch("mcp_fs_agent.stdio_client") as mock_stdio,
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
       patch("mcp_fs_agent.ollama.chat", side_effect=responses),
       patch("builtins.input", side_effect=["hello.txtを読んで", "exit"]),
       patch("builtins.print"),
     ):
-      mock_stdio.return_value.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
-      mock_stdio.return_value.__aexit__ = AsyncMock(return_value=False)
+      await run()
 
-      mock_cm = AsyncMock()
-      mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
-      mock_cm.__aexit__ = AsyncMock(return_value=False)
+    fs_session.call_tool.assert_called_once_with("read_file", arguments={"path": "hello.txt"})
+    sh_session.call_tool.assert_not_called()
 
-      with patch("mcp_fs_agent.ClientSession", return_value=mock_cm):
-        await run()
+  @pytest.mark.asyncio
+  async def test_シェルツールはshセッションで実行される(self):
+    fs_tool = make_mcp_tool("read_file", "読む", {})
+    sh_tool = make_mcp_tool("execute_command", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, sh_session = make_session_mock([sh_tool])
 
-    mock_session.call_tool.assert_called_once_with("read_file", arguments={"path": "hello.txt"})
+    mock_tool_content = MagicMock()
+    mock_tool_content.text = "hello"
+    mock_tool_result = MagicMock()
+    mock_tool_result.content = [mock_tool_content]
+    sh_session.call_tool.return_value = mock_tool_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "execute_command"
+    mock_tc.function.arguments = {"command": "echo hello"}
+
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_final = MagicMock(content="実行しました", tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_tool),
+      MagicMock(message=msg_final),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["echoを実行して", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    sh_session.call_tool.assert_called_once_with("execute_command", arguments={"command": "echo hello"})
+    fs_session.call_tool.assert_not_called()
