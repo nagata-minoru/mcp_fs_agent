@@ -10,6 +10,7 @@ gemma4:e2b + MCP filesystem agent
 
 import asyncio
 import os
+import readline  # noqa: F401
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
