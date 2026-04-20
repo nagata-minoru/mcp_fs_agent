@@ -67,7 +67,7 @@ async def run():
           print("終了するには 'exit' または Ctrl+C\n")
 
           messages: list[dict] = [
-            {"role": "system", "content": f"作業ディレクトリは {CWD} です。ファイル操作やコマンド実行では必ずこの絶対パスを使用してください。相対パスは使用しないでください。"},
+            {"role": "system", "content": f"The working directory is {CWD}. Always use this absolute path for file operations and command execution. Never use relative paths."},
           ]
 
           while True:
