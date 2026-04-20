@@ -66,7 +66,9 @@ async def run():
           print(f"[許可コマンド] {ALLOW_COMMANDS}")
           print("終了するには 'exit' または Ctrl+C\n")
 
-          messages: list[dict] = []
+          messages: list[dict] = [
+            {"role": "system", "content": f"作業ディレクトリは {CWD} です。ファイル操作やコマンド実行では必ずこの絶対パスを使用してください。相対パスは使用しないでください。"},
+          ]
 
           while True:
             try:
