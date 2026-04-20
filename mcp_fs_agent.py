@@ -17,7 +17,11 @@ import ollama
 
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
-ALLOW_PATTERNS = os.environ.get("ALLOW_PATTERNS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
+_DEFAULT_COMMANDS = "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill"
+ALLOW_PATTERNS = os.environ.get(
+  "ALLOW_PATTERNS",
+  ",".join(f"^{cmd}(\\s|$)" for cmd in _DEFAULT_COMMANDS.split(",")),
+)
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
