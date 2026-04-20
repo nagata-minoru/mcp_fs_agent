@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
-MODEL = "gemma4:e2b"
+MODEL = "qwen3.5:4b"
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 
@@ -82,7 +82,8 @@ async def run():
           messages: list[dict] = [
             {"role": "system", "content": (
               f"The working directory is {CWD}. "
-              "Always use this absolute path for file operations and command execution. Never use relative paths. "
+              "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
+              "Always use absolute paths. "
               "To create or overwrite a file, use the write_file tool. "
               "Shell redirection (>) is not supported in shell_execute; use bash -c '...' if you need it."
             )},
