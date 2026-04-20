@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
-MODEL = "gemma4:e2b"
+MODEL = "qwen3.5:4b"
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 
