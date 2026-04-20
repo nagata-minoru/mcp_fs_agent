@@ -17,7 +17,7 @@ import ollama
 
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
-ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv")
+ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
