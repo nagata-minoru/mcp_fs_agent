@@ -1,6 +1,7 @@
+import re
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from mcp_fs_agent import mcp_tools_to_ollama, run
+from mcp_fs_agent import mcp_tools_to_ollama, run, ALLOW_PATTERNS
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
   tool = MagicMock()
@@ -8,6 +9,29 @@ def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> Mag
   tool.description = description
   tool.inputSchema = input_schema
   return tool
+
+class TestAllowPatterns:
+  def _matches(self, cmd: str) -> bool:
+    return any(
+      re.match(p, cmd)
+      for p in ALLOW_PATTERNS.split(",")
+    )
+
+  def test_許可コマンドは単体でマッチする(self):
+    for cmd in ["ls", "git", "cat", "grep", "python"]:
+      assert self._matches(cmd), f"{cmd} should match"
+
+  def test_許可コマンドはサブコマンド付きでマッチする(self):
+    assert self._matches("ls -la")
+    assert self._matches("git init")
+    assert self._matches("git add .")
+    assert self._matches("python script.py")
+
+  def test_許可コマンドの前方一致は弾く(self):
+    assert not self._matches("lsappinfo")
+    assert not self._matches("gitk")
+    assert not self._matches("finder")
+    assert not self._matches("psql")
 
 def make_stdio_mock():
   m = MagicMock()
