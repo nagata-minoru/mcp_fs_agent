@@ -32,6 +32,9 @@ class TestAllowCommands:
   def test_デフォルトのホワイトリストにlsが含まれる(self):
     assert "ls" in ALLOW_COMMANDS.split(",")
 
+  def test_デフォルトのホワイトリストにbashが含まれる(self):
+    assert "bash" in ALLOW_COMMANDS.split(",")
+
 class TestNormalizeShellArgs:
   def test_スペースを含む要素を分割する(self):
     args = {"command": ["git init"], "directory": "/tmp"}
@@ -95,6 +98,32 @@ class TestMcpToolsToOllama:
     assert result[0]["function"]["parameters"] is schema
 
 class TestRun:
+  @pytest.mark.asyncio
+  async def test_システムプロンプトにファイル作成とbash指示が含まれる(self):
+    fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
+    sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
+
+    mock_msg = MagicMock(content="ok", tool_calls=None)
+    captured = {}
+
+    def capture_chat(**kwargs):
+      captured["messages"] = kwargs.get("messages", [])
+      return MagicMock(message=mock_msg)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=capture_chat),
+      patch("builtins.input", side_effect=["hello", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    system_msg = captured["messages"][0]
+    assert system_msg["role"] == "system"
+    assert "write_file" in system_msg["content"]
+    assert "bash -c" in system_msg["content"]
+
   @pytest.mark.asyncio
   async def test_exitで終了する(self):
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])

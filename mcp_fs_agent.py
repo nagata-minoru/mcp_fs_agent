@@ -18,7 +18,7 @@ import ollama
 
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
-ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
+ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
@@ -80,7 +80,12 @@ async def run():
           print("終了するには 'exit' または Ctrl+C\n")
 
           messages: list[dict] = [
-            {"role": "system", "content": f"The working directory is {CWD}. Always use this absolute path for file operations and command execution. Never use relative paths."},
+            {"role": "system", "content": (
+              f"The working directory is {CWD}. "
+              "Always use this absolute path for file operations and command execution. Never use relative paths. "
+              "To create or overwrite a file, use the write_file tool. "
+              "Shell redirection (>) is not supported in shell_execute; use bash -c '...' if you need it."
+            )},
           ]
 
           while True:
