@@ -1,7 +1,6 @@
-import re
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from mcp_fs_agent import mcp_tools_to_ollama, run, ALLOW_PATTERNS
+from mcp_fs_agent import mcp_tools_to_ollama, run, normalize_shell_args, ALLOW_COMMANDS
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
   tool = MagicMock()
@@ -9,29 +8,6 @@ def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> Mag
   tool.description = description
   tool.inputSchema = input_schema
   return tool
-
-class TestAllowPatterns:
-  def _matches(self, cmd: str) -> bool:
-    return any(
-      re.match(p, cmd)
-      for p in ALLOW_PATTERNS.split(",")
-    )
-
-  def test_許可コマンドは単体でマッチする(self):
-    for cmd in ["ls", "git", "cat", "grep", "python"]:
-      assert self._matches(cmd), f"{cmd} should match"
-
-  def test_許可コマンドはサブコマンド付きでマッチする(self):
-    assert self._matches("ls -la")
-    assert self._matches("git init")
-    assert self._matches("git add .")
-    assert self._matches("python script.py")
-
-  def test_許可コマンドの前方一致は弾く(self):
-    assert not self._matches("lsappinfo")
-    assert not self._matches("gitk")
-    assert not self._matches("finder")
-    assert not self._matches("psql")
 
 def make_stdio_mock():
   m = MagicMock()
@@ -48,6 +24,39 @@ def make_session_mock(tools: list) -> AsyncMock:
   cm.__aenter__ = AsyncMock(return_value=session)
   cm.__aexit__ = AsyncMock(return_value=False)
   return cm, session
+
+class TestAllowCommands:
+  def test_デフォルトのホワイトリストにgitが含まれる(self):
+    assert "git" in ALLOW_COMMANDS.split(",")
+
+  def test_デフォルトのホワイトリストにlsが含まれる(self):
+    assert "ls" in ALLOW_COMMANDS.split(",")
+
+class TestNormalizeShellArgs:
+  def test_スペースを含む要素を分割する(self):
+    args = {"command": ["git init"], "directory": "/tmp"}
+    result = normalize_shell_args("shell_execute", args)
+    assert result["command"] == ["git", "init"]
+
+  def test_スペースなし要素はそのまま(self):
+    args = {"command": ["git", "init"], "directory": "/tmp"}
+    result = normalize_shell_args("shell_execute", args)
+    assert result["command"] == ["git", "init"]
+
+  def test_shell_execute以外はそのまま(self):
+    args = {"command": ["git init"]}
+    result = normalize_shell_args("read_file", args)
+    assert result["command"] == ["git init"]
+
+  def test_commandキーがなければそのまま(self):
+    args = {"path": "/tmp"}
+    result = normalize_shell_args("shell_execute", args)
+    assert result == {"path": "/tmp"}
+
+  def test_複数引数を含む要素を分割する(self):
+    args = {"command": ["ls -la /tmp"], "directory": "/tmp"}
+    result = normalize_shell_args("shell_execute", args)
+    assert result["command"] == ["ls", "-la", "/tmp"]
 
 class TestMcpToolsToOllama:
   def test_単一ツールを変換できる(self):
@@ -107,7 +116,7 @@ class TestRun:
   @pytest.mark.asyncio
   async def test_ファイルシステムツールはfsセッションで実行される(self):
     fs_tool = make_mcp_tool("read_file", "読む", {})
-    sh_tool = make_mcp_tool("execute_command", "実行", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
     sh_cm, sh_session = make_session_mock([sh_tool])
 
@@ -144,7 +153,7 @@ class TestRun:
   @pytest.mark.asyncio
   async def test_シェルツールはshセッションで実行される(self):
     fs_tool = make_mcp_tool("read_file", "読む", {})
-    sh_tool = make_mcp_tool("execute_command", "実行", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
     sh_cm, sh_session = make_session_mock([sh_tool])
 
@@ -155,8 +164,8 @@ class TestRun:
     sh_session.call_tool.return_value = mock_tool_result
 
     mock_tc = MagicMock()
-    mock_tc.function.name = "execute_command"
-    mock_tc.function.arguments = {"command": "echo hello"}
+    mock_tc.function.name = "shell_execute"
+    mock_tc.function.arguments = {"command": ["echo hello"], "directory": "/tmp"}
 
     msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
     msg_final = MagicMock(content="実行しました", tool_calls=None)
@@ -175,5 +184,7 @@ class TestRun:
     ):
       await run()
 
-    sh_session.call_tool.assert_called_once_with("execute_command", arguments={"command": "echo hello"})
+    sh_session.call_tool.assert_called_once_with(
+      "shell_execute", arguments={"command": ["echo", "hello"], "directory": "/tmp"}
+    )
     fs_session.call_tool.assert_not_called()

@@ -11,17 +11,14 @@ gemma4:e2b + MCP filesystem + shell agent
 import asyncio
 import os
 import readline  # noqa: F401
+import shlex
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
-_DEFAULT_COMMANDS = "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill"
-ALLOW_PATTERNS = os.environ.get(
-  "ALLOW_PATTERNS",
-  ",".join(f"^{cmd}(\\s|$)" for cmd in _DEFAULT_COMMANDS.split(",")),
-)
+ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
@@ -36,6 +33,18 @@ def mcp_tools_to_ollama(tools) -> list[dict]:
     for t in tools
   ]
 
+def normalize_shell_args(name: str, args: dict) -> dict:
+  """モデルが command を1要素の文字列で渡した場合に split する。"""
+  if name != "shell_execute" or "command" not in args:
+    return args
+  cmd = args["command"]
+  if not isinstance(cmd, list):
+    return args
+  normalized = []
+  for part in cmd:
+    normalized.extend(shlex.split(part) if " " in part else [part])
+  return {**args, "command": normalized}
+
 async def run():
   fs_params = StdioServerParameters(
     command="npx",
@@ -44,7 +53,7 @@ async def run():
   shell_params = StdioServerParameters(
     command="uvx",
     args=["mcp-shell-server"],
-    env={**os.environ, "ALLOW_PATTERNS": ALLOW_PATTERNS},
+    env={**os.environ, "ALLOW_COMMANDS": ALLOW_COMMANDS},
     cwd=CWD,
   )
 
@@ -67,7 +76,7 @@ async def run():
           all_tools = mcp_tools_to_ollama(fs_tools + sh_tools)
           print(f"[利用可能ツール] {list(tool_registry.keys())}")
           print(f"[対象ディレクトリ] {CWD}")
-          print(f"[許可コマンド] {ALLOW_PATTERNS}")
+          print(f"[許可コマンド] {ALLOW_COMMANDS}")
           print("終了するには 'exit' または Ctrl+C\n")
 
           messages: list[dict] = [
@@ -103,7 +112,7 @@ async def run():
 
               for tc in msg.tool_calls:
                 name = tc.function.name
-                args = tc.function.arguments or {}
+                args = normalize_shell_args(name, tc.function.arguments or {})
                 print(f"  [Tool] {name}({args})")
                 session = tool_registry.get(name, fs_session)
                 result = await session.call_tool(name, arguments=args)
