@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run --script
 """
 gemma4:e2b + MCP filesystem agent
 カレントディレクトリへの読み書きアクセスを提供する
