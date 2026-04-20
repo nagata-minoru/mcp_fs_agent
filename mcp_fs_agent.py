@@ -18,6 +18,8 @@ import ollama
 MODEL = "gemma4:e2b"
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill")
+# モデルがサブコマンドを1つの文字列で渡す場合（例: "git init"）にも対応するためプレフィックスマッチを追加
+ALLOW_PATTERNS = os.environ.get("ALLOW_PATTERNS", ",".join(ALLOW_COMMANDS.split(",")))
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
   return [
@@ -40,7 +42,7 @@ async def run():
   shell_params = StdioServerParameters(
     command="uvx",
     args=["mcp-shell-server"],
-    env={**os.environ, "ALLOW_COMMANDS": ALLOW_COMMANDS},
+    env={**os.environ, "ALLOW_COMMANDS": ALLOW_COMMANDS, "ALLOW_PATTERNS": ALLOW_PATTERNS},
     cwd=CWD,
   )
 
