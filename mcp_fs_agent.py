@@ -41,6 +41,7 @@ async def run():
     command="uvx",
     args=["mcp-shell-server"],
     env={**os.environ, "ALLOW_COMMANDS": ALLOW_COMMANDS},
+    cwd=CWD,
   )
 
   async with stdio_client(fs_params) as (fs_read, fs_write):
