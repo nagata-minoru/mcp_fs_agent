@@ -184,6 +184,7 @@ class TestRun:
     assert "write_file" in system_msg["content"]
     assert "bash -c" in system_msg["content"]
     assert "NEVER output code as text" in system_msg["content"]
+    assert "Japanese" in system_msg["content"]
 
   @pytest.mark.asyncio
   async def test_コードブロックを返した場合にナッジする(self):
