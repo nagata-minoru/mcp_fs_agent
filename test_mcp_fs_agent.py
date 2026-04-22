@@ -135,6 +135,7 @@ class TestRun:
     mock_tool_content = MagicMock()
     mock_tool_content.text = "ok"
     mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
     mock_tool_result.content = [mock_tool_content]
     fs_session.call_tool.return_value = mock_tool_result
 
@@ -188,6 +189,54 @@ class TestRun:
     assert chat_call_count == 3
 
   @pytest.mark.asyncio
+  async def test_ツールエラー後にリトライナッジを送る(self):
+    fs_tool = make_mcp_tool("write_file", "書く", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, _ = make_session_mock([sh_tool])
+
+    error_result = MagicMock()
+    error_result.isError = True
+    error_result.content = [MagicMock(text="Invalid input: expected string, received undefined")]
+
+    success_result = MagicMock()
+    success_result.isError = False
+    success_result.content = [MagicMock(text="ok")]
+
+    fs_session.call_tool.side_effect = [error_result, success_result]
+
+    mock_tc_bad = MagicMock()
+    mock_tc_bad.function.name = "write_file"
+    mock_tc_bad.function.arguments = {}
+
+    mock_tc_good = MagicMock()
+    mock_tc_good.function.name = "write_file"
+    mock_tc_good.function.arguments = {"path": "/tmp/hello.py", "content": "print('hello')"}
+
+    msg_with_bad_tool = MagicMock(content="", tool_calls=[mock_tc_bad])
+    msg_empty = MagicMock(content="", tool_calls=None)
+    msg_with_good_tool = MagicMock(content="", tool_calls=[mock_tc_good])
+    msg_final = MagicMock(content="書きました", tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_bad_tool),
+      MagicMock(message=msg_empty),
+      MagicMock(message=msg_with_good_tool),
+      MagicMock(message=msg_final),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    assert fs_session.call_tool.call_count == 2
+
+  @pytest.mark.asyncio
   async def test_exitで終了する(self):
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
     sh_cm, _ = make_session_mock([make_mcp_tool("execute_command", "実行", {})])
@@ -215,6 +264,7 @@ class TestRun:
     mock_tool_content = MagicMock()
     mock_tool_content.text = "ファイルの内容"
     mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
     mock_tool_result.content = [mock_tool_content]
     fs_session.call_tool.return_value = mock_tool_result
 
@@ -252,6 +302,7 @@ class TestRun:
     mock_tool_content = MagicMock()
     mock_tool_content.text = "hello"
     mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
     mock_tool_result.content = [mock_tool_content]
     sh_session.call_tool.return_value = mock_tool_result
 
