@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from mcp_fs_agent import mcp_tools_to_ollama, run, normalize_shell_args, ALLOW_COMMANDS
+from mcp_fs_agent import mcp_tools_to_ollama, run, normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
   tool = MagicMock()
@@ -60,6 +60,34 @@ class TestNormalizeShellArgs:
     args = {"command": ["ls -la /tmp"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["ls", "-la", "/tmp"]
+
+class TestExtractFilenameFromMessages:
+  def test_ユーザーメッセージからファイル名を抽出する(self):
+    messages = [{"role": "user", "content": "tetris.py を作って"}]
+    assert extract_filename_from_messages(messages) == "tetris.py"
+
+  def test_複数ファイル名があれば最初を返す(self):
+    messages = [{"role": "user", "content": "game.py と utils.py を作って"}]
+    assert extract_filename_from_messages(messages) == "game.py"
+
+  def test_ファイル名がなければデフォルトを返す(self):
+    messages = [{"role": "user", "content": "テトリスを作って"}]
+    assert extract_filename_from_messages(messages) == "output.py"
+
+  def test_直近のユーザーメッセージを優先する(self):
+    messages = [
+      {"role": "user", "content": "old.py を作って"},
+      {"role": "assistant", "content": "ok"},
+      {"role": "user", "content": "new.py に書いて"},
+    ]
+    assert extract_filename_from_messages(messages) == "new.py"
+
+  def test_userロール以外は無視する(self):
+    messages = [
+      {"role": "assistant", "content": "assistant.py"},
+      {"role": "user", "content": "ファイルを作って"},
+    ]
+    assert extract_filename_from_messages(messages) == "output.py"
 
 class TestMcpToolsToOllama:
   def test_単一ツールを変換できる(self):
@@ -187,6 +215,43 @@ class TestRun:
       await run()
 
     assert chat_call_count == 3
+
+  @pytest.mark.asyncio
+  async def test_write_fileにpathがなければメッセージから補完する(self):
+    fs_tool = make_mcp_tool("write_file", "書く", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, _ = make_session_mock([sh_tool])
+
+    mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
+    mock_tool_result.content = [MagicMock(text="ok")]
+    fs_session.call_tool.return_value = mock_tool_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "write_file"
+    mock_tc.function.arguments = {"content": "print('hello')"}
+
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_final = MagicMock(content="書きました", tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_tool),
+      MagicMock(message=msg_final),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    call_args = fs_session.call_tool.call_args
+    assert call_args[1]["arguments"]["content"] == "print('hello')"
+    assert call_args[1]["arguments"]["path"].endswith("hello.py")
 
   @pytest.mark.asyncio
   async def test_ツールエラー後にリトライナッジを送る(self):
