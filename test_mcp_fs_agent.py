@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from mcp_fs_agent import mcp_tools_to_ollama, run, normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
+  """MCP ツールのモックを生成する。"""
   tool = MagicMock()
   tool.name = name
   tool.description = description
@@ -10,12 +11,14 @@ def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> Mag
   return tool
 
 def make_stdio_mock():
+  """stdio_client 用の非同期コンテキストマネージャモックを生成する。"""
   m = MagicMock()
   m.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
   m.__aexit__ = AsyncMock(return_value=False)
   return m
 
 def make_session_mock(tools: list) -> AsyncMock:
+  """ClientSession 用のモックとセッションオブジェクトを返す。"""
   tools_result = MagicMock()
   tools_result.tools = tools
   session = AsyncMock()
@@ -26,55 +29,73 @@ def make_session_mock(tools: list) -> AsyncMock:
   return cm, session
 
 class TestAllowCommands:
+  """ALLOW_COMMANDS のデフォルト値テスト。"""
+
   def test_デフォルトのホワイトリストにgitが含まれる(self):
+    """git が ALLOW_COMMANDS のデフォルト値に含まれることを確認する。"""
     assert "git" in ALLOW_COMMANDS.split(",")
 
   def test_デフォルトのホワイトリストにlsが含まれる(self):
+    """ls が ALLOW_COMMANDS のデフォルト値に含まれることを確認する。"""
     assert "ls" in ALLOW_COMMANDS.split(",")
 
   def test_デフォルトのホワイトリストにbashが含まれる(self):
+    """bash が ALLOW_COMMANDS のデフォルト値に含まれることを確認する。"""
     assert "bash" in ALLOW_COMMANDS.split(",")
 
 class TestNormalizeShellArgs:
+  """normalize_shell_args() のテスト。"""
+
   def test_スペースを含む要素を分割する(self):
+    """スペースを含む要素を shlex.split で分割することを確認する。"""
     args = {"command": ["git init"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["git", "init"]
 
   def test_スペースなし要素はそのまま(self):
+    """スペースを含まない要素はそのまま維持されることを確認する。"""
     args = {"command": ["git", "init"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["git", "init"]
 
   def test_shell_execute以外はそのまま(self):
+    """shell_execute 以外のツール名の場合は引数を変更しないことを確認する。"""
     args = {"command": ["git init"]}
     result = normalize_shell_args("read_file", args)
     assert result["command"] == ["git init"]
 
   def test_commandキーがなければそのまま(self):
+    """command キーがない場合は引数をそのまま返すことを確認する。"""
     args = {"path": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result == {"path": "/tmp"}
 
   def test_複数引数を含む要素を分割する(self):
+    """スペース区切りの複数引数を正しく分割することを確認する。"""
     args = {"command": ["ls -la /tmp"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["ls", "-la", "/tmp"]
 
 class TestExtractFilenameFromMessages:
+  """extract_filename_from_messages() のテスト。"""
+
   def test_ユーザーメッセージからファイル名を抽出する(self):
+    """user ロールのメッセージからファイル名を正規表現で抽出することを確認する。"""
     messages = [{"role": "user", "content": "tetris.py を作って"}]
     assert extract_filename_from_messages(messages) == "tetris.py"
 
   def test_複数ファイル名があれば最初を返す(self):
+    """複数のファイル名が含まれる場合は最初に見つかったものを返すことを確認する。"""
     messages = [{"role": "user", "content": "game.py と utils.py を作って"}]
     assert extract_filename_from_messages(messages) == "game.py"
 
   def test_ファイル名がなければデフォルトを返す(self):
+    """ファイル名パターンが見つからない場合は output.py を返すことを確認する。"""
     messages = [{"role": "user", "content": "テトリスを作って"}]
     assert extract_filename_from_messages(messages) == "output.py"
 
   def test_直近のユーザーメッセージを優先する(self):
+    """逆順に検索するため直近のユーザーメッセージのファイル名が優先されることを確認する。"""
     messages = [
       {"role": "user", "content": "old.py を作って"},
       {"role": "assistant", "content": "ok"},
@@ -83,6 +104,7 @@ class TestExtractFilenameFromMessages:
     assert extract_filename_from_messages(messages) == "new.py"
 
   def test_userロール以外は無視する(self):
+    """assistant などの user 以外のロールのメッセージは検索対象外であることを確認する。"""
     messages = [
       {"role": "assistant", "content": "assistant.py"},
       {"role": "user", "content": "ファイルを作って"},
@@ -90,7 +112,10 @@ class TestExtractFilenameFromMessages:
     assert extract_filename_from_messages(messages) == "output.py"
 
 class TestMcpToolsToOllama:
+  """mcp_tools_to_ollama() のテスト。"""
+
   def test_単一ツールを変換できる(self):
+    """MCP ツールを Ollama 形式の function 定義に変換することを確認する。"""
     schema = {"type": "object", "properties": {"path": {"type": "string"}}}
     tools = [make_mcp_tool("read_file", "ファイルを読む", schema)]
     result = mcp_tools_to_ollama(tools)
@@ -102,14 +127,17 @@ class TestMcpToolsToOllama:
     assert f["parameters"] == schema
 
   def test_空リストを渡すと空リストを返す(self):
+    """ツールリストが空の場合は空リストを返すことを確認する。"""
     assert mcp_tools_to_ollama([]) == []
 
   def test_descriptionがNoneの場合は空文字になる(self):
+    """description が None の場合は空文字列に変換されることを確認する。"""
     tools = [make_mcp_tool("list_dir", None, {})]
     result = mcp_tools_to_ollama(tools)
     assert result[0]["function"]["description"] == ""
 
   def test_複数ツールを変換できる(self):
+    """複数のツールが順序を保って変換されることを確認する。"""
     tools = [
       make_mcp_tool("read_file", "読む", {}),
       make_mcp_tool("write_file", "書く", {}),
@@ -120,14 +148,18 @@ class TestMcpToolsToOllama:
     assert result[1]["function"]["name"] == "write_file"
 
   def test_inputSchemaがそのまま渡される(self):
+    """inputSchema オブジェクトが参照渡しされることを確認する。"""
     schema = {"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}}
     tools = [make_mcp_tool("read_file", "", schema)]
     result = mcp_tools_to_ollama(tools)
     assert result[0]["function"]["parameters"] is schema
 
 class TestRun:
+  """run() の統合テスト。"""
+
   @pytest.mark.asyncio
   async def test_システムプロンプトにファイル作成とbash指示が含まれる(self):
+    """システムプロンプトに write_file・bash -c・コードテキスト出力禁止の指示が含まれることを確認する。"""
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
     sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
 
@@ -155,6 +187,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_コードブロックを返した場合にナッジする(self):
+    """モデルがコードブロックを含む返答をしてツールを呼ばなかった場合にナッジを送ることを確認する。"""
     fs_tool = make_mcp_tool("write_file", "書く", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
@@ -194,6 +227,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_ナッジは最大2回まで(self):
+    """コードブロックが返り続けてもナッジは最大2回で打ち切られることを確認する。"""
     fs_cm, _ = make_session_mock([make_mcp_tool("write_file", "書く", {})])
     sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
 
@@ -218,6 +252,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_write_fileにpathがなければメッセージから補完する(self):
+    """write_file に path が渡されなかった場合、ユーザーメッセージからファイル名を推定して補完することを確認する。"""
     fs_tool = make_mcp_tool("write_file", "書く", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
@@ -255,6 +290,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_ツールエラー後にリトライナッジを送る(self):
+    """ツール呼び出しがエラーになった後にモデルがツールを呼ばない返答をした場合にリトライナッジを送ることを確認する。"""
     fs_tool = make_mcp_tool("write_file", "書く", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
@@ -303,6 +339,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_リトライナッジにエラー内容が含まれる(self):
+    """リトライナッジのメッセージに実際のエラーメッセージが含まれることを確認する。"""
     fs_tool = make_mcp_tool("write_file", "書く", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
@@ -353,6 +390,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_exitで終了する(self):
+    """exit と入力した場合にエラーなくループを抜けて終了することを確認する。"""
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
     sh_cm, _ = make_session_mock([make_mcp_tool("execute_command", "実行", {})])
 
@@ -371,6 +409,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_ファイルシステムツールはfsセッションで実行される(self):
+    """read_file などのファイルシステムツールは fs セッション経由で実行されることを確認する。"""
     fs_tool = make_mcp_tool("read_file", "読む", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
@@ -409,6 +448,7 @@ class TestRun:
 
   @pytest.mark.asyncio
   async def test_シェルツールはshセッションで実行される(self):
+    """shell_execute などのシェルツールは sh セッション経由で実行されることを確認する。"""
     fs_tool = make_mcp_tool("read_file", "読む", {})
     sh_tool = make_mcp_tool("shell_execute", "実行", {})
     fs_cm, fs_session = make_session_mock([fs_tool])
