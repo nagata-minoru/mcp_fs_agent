@@ -35,6 +35,7 @@ SYSTEM_PROMPT = (
 )
 
 def mcp_tools_to_ollama(tools) -> list[dict]:
+  """MCP ツールリストを Ollama の function 定義形式に変換する。"""
   return [
     {
       "type": "function",
@@ -48,6 +49,7 @@ def mcp_tools_to_ollama(tools) -> list[dict]:
   ]
 
 def extract_filename_from_messages(messages: list[dict]) -> str:
+  """直近のユーザーメッセージからファイル名を推定する。見つからなければ output.py を返す。"""
   for msg in reversed(messages):
     if msg.get("role") != "user":
       continue
@@ -139,6 +141,7 @@ async def agent_turn(
       messages.append({"role": "tool", "content": content})
 
 async def run():
+  """MCP サーバーに接続し、対話ループを起動する。"""
   fs_params = StdioServerParameters(
     command="npx",
     args=["-y", "@modelcontextprotocol/server-filesystem", CWD],
@@ -190,6 +193,7 @@ async def run():
             await agent_turn(messages, all_tools, tool_registry, fs_session)
 
 def main():
+  """エントリーポイント。"""
   asyncio.run(run())
 
 if __name__ == "__main__":
