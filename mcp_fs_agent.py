@@ -25,10 +25,10 @@ ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,
 
 SYSTEM_PROMPT = (
   f"The working directory is {CWD}. "
+  "NEVER ask the user any questions — if you need information, use tools to get it yourself. "
   "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
-  "NEVER ask the user clarifying questions — always use tools to gather context. "
-  "To create a git commit message, run shell_execute(['git', 'diff']) "
-  "and shell_execute(['git', 'status']) first, then propose a message. "
+  "To create a git commit message: call shell_execute with ['git', 'status'], "
+  "then call shell_execute with ['git', 'diff'], then write the message in Japanese. "
   "Always use absolute paths. "
   "To create or overwrite a file, use the write_file tool. "
   "NEVER output code as text in your response — always write it to a file immediately using write_file. "
