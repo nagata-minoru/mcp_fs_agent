@@ -237,6 +237,56 @@ class TestRun:
     assert fs_session.call_tool.call_count == 2
 
   @pytest.mark.asyncio
+  async def test_リトライナッジにエラー内容が含まれる(self):
+    fs_tool = make_mcp_tool("write_file", "書く", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, _ = make_session_mock([sh_tool])
+
+    error_result = MagicMock()
+    error_result.isError = True
+    error_result.content = [MagicMock(text="Invalid input: expected string, received undefined")]
+    fs_session.call_tool.return_value = error_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "write_file"
+    mock_tc.function.arguments = {}
+
+    captured_messages = []
+
+    def capture_chat(**kwargs):
+      captured_messages.extend(kwargs.get("messages", []))
+      msg_empty = MagicMock(content="", tool_calls=None)
+      return MagicMock(message=msg_empty)
+
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    first_response = MagicMock(message=msg_with_tool)
+
+    call_count = 0
+    def side_effect_chat(**kwargs):
+      nonlocal call_count
+      call_count += 1
+      captured_messages.clear()
+      captured_messages.extend(kwargs.get("messages", []))
+      if call_count == 1:
+        return first_response
+      msg_empty = MagicMock(content="", tool_calls=None)
+      return MagicMock(message=msg_empty)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=side_effect_chat),
+      patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    nudge_msgs = [m for m in captured_messages if m.get("role") == "user" and "failed with" in m.get("content", "")]
+    assert len(nudge_msgs) >= 1
+    assert "Invalid input: expected string, received undefined" in nudge_msgs[0]["content"]
+
+  @pytest.mark.asyncio
   async def test_exitで終了する(self):
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
     sh_cm, _ = make_session_mock([make_mcp_tool("execute_command", "実行", {})])

@@ -107,6 +107,7 @@ async def run():
 
             nudge_count = 0
             last_had_error = False
+            last_error_content = ""
             while True:
               response = ollama.chat(
                 model=MODEL,
@@ -122,7 +123,7 @@ async def run():
                 if nudge_count < 2 and (had_error or "```" in (msg.content or "")):
                   nudge_count += 1
                   nudge_msg = (
-                    "The previous tool call failed. Fix the error and retry."
+                    f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
                     if had_error else
                     "Now write that code to a file using write_file."
                   )
@@ -144,6 +145,7 @@ async def run():
                 if result.isError:
                   print(f"  [Error] {content}")
                   last_had_error = True
+                  last_error_content = content
                 messages.append({"role": "tool", "content": content})
 
 def main():
