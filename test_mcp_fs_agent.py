@@ -185,6 +185,7 @@ class TestRun:
     assert "bash -c" in system_msg["content"]
     assert "NEVER output code as text" in system_msg["content"]
     assert "Japanese" in system_msg["content"]
+    assert "2-space indentation" in system_msg["content"]
 
   @pytest.mark.asyncio
   async def test_コードブロックを返した場合にナッジする(self):
@@ -221,6 +222,7 @@ class TestRun:
       patch("mcp_fs_agent.ollama.chat", side_effect=responses),
       patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
       patch("builtins.print"),
+      patch("mcp_fs_agent.py_compile.compile"),
     ):
       await run()
 
@@ -248,6 +250,55 @@ class TestRun:
       patch("mcp_fs_agent.ollama.chat", side_effect=count_chat),
       patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
       patch("builtins.print"),
+    ):
+      await run()
+
+    assert chat_call_count == 3
+
+  @pytest.mark.asyncio
+  async def test_pyファイル書き込み後に構文チェックする(self):
+    """write_file で .py ファイルを書いた後に py_compile で構文チェックし、エラーがあればナッジを送ることを確認する。"""
+    import py_compile as _py_compile
+
+    fs_tool = make_mcp_tool("write_file", "書く", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, _ = make_session_mock([sh_tool])
+
+    mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
+    mock_tool_result.content = [MagicMock(text="ok")]
+    fs_session.call_tool.return_value = mock_tool_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "write_file"
+    mock_tc.function.arguments = {"path": "/tmp/bad_syntax.py", "content": "def foo(\n"}
+
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_no_tools = MagicMock(content="", tool_calls=None)
+    msg_final = MagicMock(content="修正しました", tool_calls=None)
+
+    chat_call_count = 0
+    def side_effect_chat(**kwargs):
+      nonlocal chat_call_count
+      chat_call_count += 1
+      if chat_call_count == 1:
+        return MagicMock(message=msg_with_tool)
+      if chat_call_count == 2:
+        return MagicMock(message=msg_no_tools)
+      return MagicMock(message=msg_final)
+
+    compile_error = _py_compile.PyCompileError(
+      _py_compile.PyCompileError, "SyntaxError: unexpected EOF", "/tmp/bad_syntax.py"
+    )
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=side_effect_chat),
+      patch("builtins.input", side_effect=["bad_syntax.pyを作って", "exit"]),
+      patch("builtins.print"),
+      patch("mcp_fs_agent.py_compile.compile", side_effect=compile_error),
     ):
       await run()
 
@@ -284,6 +335,7 @@ class TestRun:
       patch("mcp_fs_agent.ollama.chat", side_effect=responses),
       patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
       patch("builtins.print"),
+      patch("mcp_fs_agent.py_compile.compile"),
     ):
       await run()
 
@@ -335,6 +387,7 @@ class TestRun:
       patch("mcp_fs_agent.ollama.chat", side_effect=responses),
       patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
       patch("builtins.print"),
+      patch("mcp_fs_agent.py_compile.compile"),
     ):
       await run()
 

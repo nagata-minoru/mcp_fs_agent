@@ -10,6 +10,7 @@ gemma4:e2b + MCP filesystem + shell agent
 
 import asyncio
 import os
+import py_compile
 import re
 import readline  # noqa: F401
 import shlex
@@ -98,6 +99,7 @@ async def run():
               "NEVER output code as text in your response — always write it to a file immediately using write_file. "
               "If a tool call fails, fix the arguments and retry — never ask the user to manually perform file operations. "
               "Shell redirection (>) is not supported in shell_execute; use bash -c '...' if you need it. "
+              "When writing Python code, use 2-space indentation. "
               "Always respond to the user in Japanese."
             )},
           ]
@@ -161,6 +163,15 @@ async def run():
                   print(f"  [Error] {content}")
                   last_had_error = True
                   last_error_content = content
+                elif name == "write_file" and args.get("path", "").endswith(".py"):
+                  try:
+                    py_compile.compile(args["path"], doraise=True)
+                  except py_compile.PyCompileError as e:
+                    syntax_error = str(e)
+                    print(f"  [SyntaxError] {syntax_error}")
+                    content = f"File written but has a syntax error: {syntax_error}"
+                    last_had_error = True
+                    last_error_content = content
                 messages.append({"role": "tool", "content": content})
 
 def main():
