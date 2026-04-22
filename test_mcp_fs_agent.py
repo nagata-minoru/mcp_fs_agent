@@ -1,6 +1,9 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from mcp_fs_agent import mcp_tools_to_ollama, run, normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages
+from mcp_fs_agent import (
+  mcp_tools_to_ollama, run, agent_turn, execute_tool_call,
+  normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages, SYSTEM_PROMPT,
+)
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
   """MCP ツールのモックを生成する。"""
@@ -181,11 +184,7 @@ class TestRun:
 
     system_msg = captured["messages"][0]
     assert system_msg["role"] == "system"
-    assert "write_file" in system_msg["content"]
-    assert "bash -c" in system_msg["content"]
-    assert "NEVER output code as text" in system_msg["content"]
-    assert "Japanese" in system_msg["content"]
-    assert "2-space indentation" in system_msg["content"]
+    assert system_msg["content"] == SYSTEM_PROMPT
 
   @pytest.mark.asyncio
   async def test_コードブロックを返した場合にナッジする(self):
