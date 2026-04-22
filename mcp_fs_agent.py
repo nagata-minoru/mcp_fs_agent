@@ -19,6 +19,7 @@ from mcp.client.stdio import stdio_client
 import ollama
 
 MODEL = "gemma4:e2b"
+_FILENAME_RE = re.compile(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA-Z][a-zA-Z0-9]*(?![a-zA-Z0-9_\-])')
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 
@@ -53,7 +54,7 @@ def extract_filename_from_messages(messages: list[dict]) -> str:
   for msg in reversed(messages):
     if msg.get("role") != "user":
       continue
-    matches = re.findall(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA-Z][a-zA-Z0-9]*(?![a-zA-Z0-9_\-])', msg.get("content", ""))
+    matches = _FILENAME_RE.findall(msg.get("content", ""))
     if matches:
       return matches[0]
   return "output.py"
