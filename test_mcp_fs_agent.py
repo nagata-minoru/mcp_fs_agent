@@ -123,6 +123,69 @@ class TestRun:
     assert system_msg["role"] == "system"
     assert "write_file" in system_msg["content"]
     assert "bash -c" in system_msg["content"]
+    assert "NEVER output code as text" in system_msg["content"]
+
+  @pytest.mark.asyncio
+  async def test_コードブロックを返した場合にナッジする(self):
+    fs_tool = make_mcp_tool("write_file", "書く", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, _ = make_session_mock([sh_tool])
+
+    mock_tool_content = MagicMock()
+    mock_tool_content.text = "ok"
+    mock_tool_result = MagicMock()
+    mock_tool_result.content = [mock_tool_content]
+    fs_session.call_tool.return_value = mock_tool_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "write_file"
+    mock_tc.function.arguments = {"path": "/tmp/hello.py", "content": "print('hello')"}
+
+    msg_with_code = MagicMock(content="```python\nprint('hello')\n```", tool_calls=None)
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_final = MagicMock(content="書きました", tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_code),
+      MagicMock(message=msg_with_tool),
+      MagicMock(message=msg_final),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    fs_session.call_tool.assert_called_once_with("write_file", arguments={"path": "/tmp/hello.py", "content": "print('hello')"})
+
+  @pytest.mark.asyncio
+  async def test_ナッジは最大2回まで(self):
+    fs_cm, _ = make_session_mock([make_mcp_tool("write_file", "書く", {})])
+    sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
+
+    msg_with_code = MagicMock(content="```python\nprint('hello')\n```", tool_calls=None)
+    chat_call_count = 0
+
+    def count_chat(**kwargs):
+      nonlocal chat_call_count
+      chat_call_count += 1
+      return MagicMock(message=msg_with_code)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=count_chat),
+      patch("builtins.input", side_effect=["hello.pyを作って", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    assert chat_call_count == 3
 
   @pytest.mark.asyncio
   async def test_exitで終了する(self):
