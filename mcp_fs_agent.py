@@ -128,7 +128,7 @@ async def agent_turn(
         if had_error:
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
         elif is_empty:
-          nudge_msg = "Your response was empty. Please provide your answer now."
+          nudge_msg = "Your response was empty. Do NOT call any tools. Write your answer as text now."
         else:
           nudge_msg = "Now write that code to a file using write_file."
         messages.append({"role": "user", "content": nudge_msg})

@@ -456,7 +456,7 @@ class TestRun:
 
     def fake_chat(model, messages, tools):
       captured_messages.extend(messages)
-      if any(m.get("content") == "Your response was empty. Please provide your answer now." for m in messages):
+      if any("Your response was empty" in m.get("content", "") for m in messages):
         return MagicMock(message=msg_final)
       return MagicMock(message=msg_empty)
 
@@ -469,7 +469,7 @@ class TestRun:
     ):
       await run()
 
-    nudge_msgs = [m for m in captured_messages if m.get("role") == "user" and "empty" in m.get("content", "")]
+    nudge_msgs = [m for m in captured_messages if m.get("role") == "user" and "Your response was empty" in m.get("content", "")]
     assert len(nudge_msgs) >= 1
 
   @pytest.mark.asyncio
