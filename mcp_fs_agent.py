@@ -10,6 +10,7 @@ gemma4:e2b + MCP filesystem + shell agent
 
 import asyncio
 import os
+import re
 import readline  # noqa: F401
 import shlex
 from mcp import ClientSession, StdioServerParameters
@@ -32,6 +33,15 @@ def mcp_tools_to_ollama(tools) -> list[dict]:
     }
     for t in tools
   ]
+
+def extract_filename_from_messages(messages: list[dict]) -> str:
+  for msg in reversed(messages):
+    if msg.get("role") != "user":
+      continue
+    matches = re.findall(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA-Z][a-zA-Z0-9]*(?![a-zA-Z0-9_\-])', msg.get("content", ""))
+    if matches:
+      return matches[0]
+  return "output.py"
 
 def normalize_shell_args(name: str, args: dict) -> dict:
   """モデルが command を1要素の文字列で渡した場合に split する。"""
@@ -136,6 +146,10 @@ async def run():
               for tc in msg.tool_calls:
                 name = tc.function.name
                 args = normalize_shell_args(name, tc.function.arguments or {})
+                if name == "write_file" and "path" not in args:
+                  filename = extract_filename_from_messages(messages)
+                  args = {**args, "path": f"{CWD}/{filename}"}
+                  print(f"  [path補完] {args['path']}")
                 print(f"  [Tool] {name}({args})")
                 session = tool_registry.get(name, fs_session)
                 result = await session.call_tool(name, arguments=args)
