@@ -16,7 +16,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import ollama
 
-MODEL = "qwen3.5:4b"
+MODEL = "gemma4:e2b"
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 
@@ -85,6 +85,7 @@ async def run():
               "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
               "Always use absolute paths. "
               "To create or overwrite a file, use the write_file tool. "
+              "NEVER output code as text in your response — always write it to a file immediately using write_file. "
               "Shell redirection (>) is not supported in shell_execute; use bash -c '...' if you need it."
             )},
           ]
@@ -103,6 +104,7 @@ async def run():
 
             messages.append({"role": "user", "content": user_input})
 
+            nudge_count = 0
             while True:
               response = ollama.chat(
                 model=MODEL,
@@ -113,6 +115,10 @@ async def run():
               messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
 
               if not msg.tool_calls:
+                if nudge_count < 2 and "```" in (msg.content or ""):
+                  nudge_count += 1
+                  messages.append({"role": "user", "content": "Now write that code to a file using write_file."})
+                  continue
                 print(f"Assistant: {msg.content}\n")
                 break
 
