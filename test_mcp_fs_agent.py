@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from mcp_fs_agent import (
   mcp_tools_to_ollama, run, agent_turn, execute_tool_call,
   normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages, SYSTEM_PROMPT,
+  format_tool_message, looks_like_text_tool_call, synthesize_commit_message,
 )
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
@@ -78,6 +79,52 @@ class TestNormalizeShellArgs:
     args = {"command": ["ls -la /tmp"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["ls", "-la", "/tmp"]
+
+class TestToolResultFormatting:
+  """ツール結果をモデルに戻す形式のテスト。"""
+
+  def test_ツール名と引数を含めて整形する(self):
+    """ツール結果にツール名と引数が含まれることを確認する。"""
+    result = format_tool_message("shell_execute", {"command": ["git", "status"]}, "M file.py")
+
+    assert result.startswith("[Tool result: shell_execute(")
+    assert "git" in result
+    assert "M file.py" in result
+
+  def test_通常テキストのツール呼び出しを検出する(self):
+    """モデルがツール呼び出しを通常テキストで返した場合に検出できることを確認する。"""
+    assert looks_like_text_tool_call('list_directory(path: "/tmp")', {"list_directory"})
+
+  def test_通常の回答はツール呼び出し扱いしない(self):
+    """通常の日本語回答をツール呼び出しとして扱わないことを確認する。"""
+    assert not looks_like_text_tool_call("確認しました", {"list_directory"})
+
+class TestCommitMessageFallback:
+  """コミットメッセージ生成のフォールバックテスト。"""
+
+  def test_git出力が空なら変更なしを返す(self):
+    """git status と diff が空の場合は変更なしメッセージを返すことを確認する。"""
+    tool_results = [
+      {"name": "shell_execute", "args": {"command": ["git", "status"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+
+    assert synthesize_commit_message(tool_results) == "コミットする変更がありません。"
+
+  def test_mcp_fs_agentのツール処理変更を要約する(self):
+    """mcp_fs_agent.py の tool 関連差分から日本語コミットメッセージを生成することを確認する。"""
+    tool_results = [
+      {"name": "shell_execute", "args": {"command": ["git", "status"]}, "content": " M mcp_fs_agent.py"},
+      {
+        "name": "shell_execute",
+        "args": {"command": ["git", "diff"]},
+        "content": "diff --git a/mcp_fs_agent.py b/mcp_fs_agent.py\n+def format_tool_message",
+      },
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+
+    assert synthesize_commit_message(tool_results) == "コミットメッセージの提案: MCPツール結果の処理を改善"
 
 class TestExtractFilenameFromMessages:
   """extract_filename_from_messages() のテスト。"""
@@ -444,6 +491,35 @@ class TestRun:
     assert "Invalid input: expected string, received undefined" in nudge_msgs[0]["content"]
 
   @pytest.mark.asyncio
+  async def test_空のレスポンスの場合にナッジする(self):
+    """モデルが空の返答をした場合にナッジを送ることを確認する。"""
+    fs_cm, _ = make_session_mock([make_mcp_tool("write_file", "書く", {})])
+    sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
+
+    msg_empty = MagicMock(content="", tool_calls=None)
+    msg_final = MagicMock(content="完了しました", tool_calls=None)
+
+    captured_messages = []
+
+    def fake_chat(model, messages, tools):
+      captured_messages.extend(messages)
+      if any("Your response was empty" in m.get("content", "") for m in messages):
+        return MagicMock(message=msg_final)
+      return MagicMock(message=msg_empty)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=fake_chat),
+      patch("builtins.input", side_effect=["何かして", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    nudge_msgs = [m for m in captured_messages if m.get("role") == "user" and "Your response was empty" in m.get("content", "")]
+    assert len(nudge_msgs) >= 1
+
+  @pytest.mark.asyncio
   async def test_exitで終了する(self):
     """exit と入力した場合にエラーなくループを抜けて終了することを確認する。"""
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
@@ -541,3 +617,144 @@ class TestRun:
       "shell_execute", arguments={"command": ["echo", "hello"], "directory": "/tmp"}
     )
     fs_session.call_tool.assert_not_called()
+
+  @pytest.mark.asyncio
+  async def test_ツール結果メッセージにツール名を含める(self):
+    """ツール実行後の次回モデル呼び出しにツール名付き結果が渡ることを確認する。"""
+    fs_tool = make_mcp_tool("read_file", "読む", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, fs_session = make_session_mock([fs_tool])
+    sh_cm, sh_session = make_session_mock([sh_tool])
+
+    mock_tool_result = MagicMock()
+    mock_tool_result.isError = False
+    mock_tool_result.content = [MagicMock(text=" M mcp_fs_agent.py")]
+    sh_session.call_tool.return_value = mock_tool_result
+
+    mock_tc = MagicMock()
+    mock_tc.function.name = "shell_execute"
+    mock_tc.function.arguments = {"command": ["git", "status"], "directory": "/tmp"}
+
+    msg_with_tool = MagicMock(content="", tool_calls=[mock_tc])
+    msg_final = MagicMock(content="確認しました", tool_calls=None)
+
+    captured_second_messages = []
+    call_count = 0
+
+    def fake_chat(**kwargs):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return MagicMock(message=msg_with_tool)
+      captured_second_messages.extend(kwargs.get("messages", []))
+      return MagicMock(message=msg_final)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=fake_chat),
+      patch("builtins.input", side_effect=["git statusを見て", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    tool_messages = [m for m in captured_second_messages if m.get("role") == "tool"]
+    assert tool_messages
+    assert tool_messages[0]["name"] == "shell_execute"
+    assert "[Tool result: shell_execute" in tool_messages[0]["content"]
+    assert "M mcp_fs_agent.py" in tool_messages[0]["content"]
+
+  @pytest.mark.asyncio
+  async def test_コミットメッセージ依頼で汎用応答ならフォールバックする(self):
+    """git 差分確認後にモデルが汎用応答を返した場合、日本語コミットメッセージを出力することを確認する。"""
+    fs_tool = make_mcp_tool("read_file", "読む", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, _ = make_session_mock([fs_tool])
+    sh_cm, sh_session = make_session_mock([sh_tool])
+
+    status_result = MagicMock()
+    status_result.isError = False
+    status_result.content = [MagicMock(text=" M mcp_fs_agent.py")]
+
+    diff_result = MagicMock()
+    diff_result.isError = False
+    diff_result.content = [MagicMock(text="diff --git a/mcp_fs_agent.py b/mcp_fs_agent.py\n+format_tool_message")]
+
+    cached_diff_result = MagicMock()
+    cached_diff_result.isError = False
+    cached_diff_result.content = [MagicMock(text="")]
+
+    sh_session.call_tool.side_effect = [status_result, diff_result, cached_diff_result]
+
+    tool_calls = []
+    for command in (["git", "status"], ["git", "diff"], ["git", "diff", "--cached"]):
+      tc = MagicMock()
+      tc.function.name = "shell_execute"
+      tc.function.arguments = {"command": command, "directory": "/tmp"}
+      tool_calls.append(tc)
+
+    msg_with_tools = MagicMock(content="", tool_calls=tool_calls)
+    msg_generic = MagicMock(content="何かご依頼があればお答えします。", tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_tools),
+      MagicMock(message=msg_generic),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["gitのコミットメッセージを日本語で作ってください。", "exit"]),
+      patch("builtins.print") as mock_print,
+    ):
+      await run()
+
+    printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+    assert "Assistant: コミットメッセージの提案: MCPツール結果の処理を改善" in printed
+
+  @pytest.mark.asyncio
+  async def test_コミットメッセージ依頼で通常テキストのツール呼び出しならフォールバックする(self):
+    """画像のように list_directory(...) を通常テキストで返した場合もコミットメッセージを出すことを確認する。"""
+    fs_tool = make_mcp_tool("list_directory", "一覧", {})
+    sh_tool = make_mcp_tool("shell_execute", "実行", {})
+    fs_cm, _ = make_session_mock([fs_tool])
+    sh_cm, sh_session = make_session_mock([sh_tool])
+
+    status_result = MagicMock()
+    status_result.isError = False
+    status_result.content = [MagicMock(text=" M mcp_fs_agent.py")]
+
+    diff_result = MagicMock()
+    diff_result.isError = False
+    diff_result.content = [MagicMock(text="diff --git a/mcp_fs_agent.py b/mcp_fs_agent.py\n+role")]
+
+    sh_session.call_tool.side_effect = [status_result, diff_result]
+
+    tool_calls = []
+    for command in (["git", "status"], ["git", "diff"]):
+      tc = MagicMock()
+      tc.function.name = "shell_execute"
+      tc.function.arguments = {"command": command, "directory": "/tmp"}
+      tool_calls.append(tc)
+
+    msg_with_tools = MagicMock(content="", tool_calls=tool_calls)
+    msg_text_tool_call = MagicMock(content='list_directory(path: "/Users/nagata/Documents/work")', tool_calls=None)
+
+    responses = iter([
+      MagicMock(message=msg_with_tools),
+      MagicMock(message=msg_text_tool_call),
+    ])
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=responses),
+      patch("builtins.input", side_effect=["gitのコミットメッセージを日本語で作ってください。", "exit"]),
+      patch("builtins.print") as mock_print,
+    ):
+      await run()
+
+    printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list if call.args)
+    assert "Assistant: コミットメッセージの提案: MCPツール結果の処理を改善" in printed
+    assert 'Assistant: list_directory(path: "/Users/nagata/Documents/work")' not in printed
