@@ -86,6 +86,7 @@ async def run():
               "Always use absolute paths. "
               "To create or overwrite a file, use the write_file tool. "
               "NEVER output code as text in your response — always write it to a file immediately using write_file. "
+              "If a tool call fails, fix the arguments and retry — never ask the user to manually perform file operations. "
               "Shell redirection (>) is not supported in shell_execute; use bash -c '...' if you need it."
             )},
           ]
@@ -131,6 +132,8 @@ async def run():
                 content = "\n".join(
                   c.text for c in result.content if hasattr(c, "text")
                 )
+                if result.isError:
+                  print(f"  [Error] {content}")
                 messages.append({"role": "tool", "content": content})
 
 def main():
