@@ -223,7 +223,9 @@ class TestRun:
     ):
       await run()
 
-    fs_session.call_tool.assert_called_once_with("write_file", arguments={"path": "/tmp/hello.py", "content": "print('hello')"})
+    fs_session.call_tool.assert_called_once_with(
+      "write_file", arguments={"path": "/tmp/hello.py", "content": "print('hello')"}
+    )
 
   @pytest.mark.asyncio
   async def test_ナッジは最大2回まで(self):
