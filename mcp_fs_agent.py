@@ -122,13 +122,15 @@ async def agent_turn(
     if not msg.tool_calls:
       had_error = last_had_error
       last_had_error = False
-      if nudge_count < 2 and (had_error or "```" in (msg.content or "")):
+      is_empty = not (msg.content or "").strip()
+      if nudge_count < 2 and (had_error or "```" in (msg.content or "") or is_empty):
         nudge_count += 1
-        nudge_msg = (
-          f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
-          if had_error else
-          "Now write that code to a file using write_file."
-        )
+        if had_error:
+          nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
+        elif is_empty:
+          nudge_msg = "Your response was empty. Please provide your answer now."
+        else:
+          nudge_msg = "Now write that code to a file using write_file."
         messages.append({"role": "user", "content": nudge_msg})
         continue
       print(f"Assistant: {msg.content}\n")

@@ -444,6 +444,35 @@ class TestRun:
     assert "Invalid input: expected string, received undefined" in nudge_msgs[0]["content"]
 
   @pytest.mark.asyncio
+  async def test_空のレスポンスの場合にナッジする(self):
+    """モデルが空の返答をした場合にナッジを送ることを確認する。"""
+    fs_cm, _ = make_session_mock([make_mcp_tool("write_file", "書く", {})])
+    sh_cm, _ = make_session_mock([make_mcp_tool("shell_execute", "実行", {})])
+
+    msg_empty = MagicMock(content="", tool_calls=None)
+    msg_final = MagicMock(content="完了しました", tool_calls=None)
+
+    captured_messages = []
+
+    def fake_chat(model, messages, tools):
+      captured_messages.extend(messages)
+      if any(m.get("content") == "Your response was empty. Please provide your answer now." for m in messages):
+        return MagicMock(message=msg_final)
+      return MagicMock(message=msg_empty)
+
+    with (
+      patch("mcp_fs_agent.stdio_client", side_effect=[make_stdio_mock(), make_stdio_mock()]),
+      patch("mcp_fs_agent.ClientSession", side_effect=[fs_cm, sh_cm]),
+      patch("mcp_fs_agent.ollama.chat", side_effect=fake_chat),
+      patch("builtins.input", side_effect=["何かして", "exit"]),
+      patch("builtins.print"),
+    ):
+      await run()
+
+    nudge_msgs = [m for m in captured_messages if m.get("role") == "user" and "empty" in m.get("content", "")]
+    assert len(nudge_msgs) >= 1
+
+  @pytest.mark.asyncio
   async def test_exitで終了する(self):
     """exit と入力した場合にエラーなくループを抜けて終了することを確認する。"""
     fs_cm, _ = make_session_mock([make_mcp_tool("read_file", "読む", {})])
