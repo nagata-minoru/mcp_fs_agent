@@ -235,6 +235,10 @@ async def execute_tool_call(
     filename = extract_filename_from_messages(messages)
     args = {**args, "path": f"{CWD}/{filename}"}
     print(f"  [path補完] {args['path']}")
+  _PATH_TOOLS = {"read_text_file", "read_file", "read_media_file", "write_file", "edit_file"}
+  if name in _PATH_TOOLS and "path" in args and not os.path.isabs(str(args["path"])):
+    args = {**args, "path": os.path.join(CWD, args["path"])}
+    print(f"  [path補完] {args['path']}")
   print(f"  [Tool] {name}({args})")
   session = tool_registry.get(name, default_session)
   result = await session.call_tool(name, arguments=args)
@@ -287,11 +291,16 @@ async def agent_turn(
       is_text_tool_call = looks_like_text_tool_call(msg.content or "", tool_names)
       _READ_TOOLS = {"read_text_file", "read_file", "read_multiple_files"}
       _WRITE_TOOLS = {"write_file", "edit_file"}
-      read_without_write = (
-        any(r["name"] in _READ_TOOLS for r in turn_tool_results)
-        and not any(r["name"] in _WRITE_TOOLS for r in turn_tool_results)
-        and bool(re.search(r"承知|了解|かしこまり", msg.content or ""))
+      _QUESTION_MARKERS = ("ご指示", "教えてください", "お知らせください", "をお聞かせ", "しょうか")
+      did_read = any(r["name"] in _READ_TOOLS for r in turn_tool_results)
+      did_write = any(r["name"] in _WRITE_TOOLS for r in turn_tool_results)
+      content_str = msg.content or ""
+      is_asking = (
+        bool(re.search(r"[？?]\s*$", content_str.strip()))
+        or any(m in content_str for m in _QUESTION_MARKERS)
+        or bool(re.search(r"承知|了解|かしこまり", content_str))
       )
+      read_without_write = did_read and not did_write and is_asking
       if nudge_count < 2 and (
         had_error or "```" in (msg.content or "")
         or is_empty or is_text_tool_call or read_without_write
@@ -308,8 +317,9 @@ async def agent_turn(
           )
         elif read_without_write:
           nudge_msg = (
-            "You read the file but did not modify it. "
-            "Fix the issue now and save the corrected file using write_file."
+            "Do not ask the user any questions. "
+            "You have already read the file. Fix the issue described in the user's request "
+            "and save the corrected version using write_file with an absolute path."
           )
         else:
           nudge_msg = "Now write that code to a file using write_file."

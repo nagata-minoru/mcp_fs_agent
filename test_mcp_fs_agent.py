@@ -631,7 +631,9 @@ class TestRun:
     ):
       await run()
 
-    fs_session.call_tool.assert_called_once_with("read_file", arguments={"path": "hello.txt"})
+    called_args = fs_session.call_tool.call_args
+    assert called_args[0][0] == "read_file"
+    assert called_args[1]["arguments"]["path"].endswith("hello.txt")
     sh_session.call_tool.assert_not_called()
 
   @pytest.mark.asyncio
