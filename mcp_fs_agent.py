@@ -320,10 +320,23 @@ async def agent_turn(
             "If the task is complete, write the final Japanese answer as text now."
           )
         elif read_without_write:
+          read_paths = [
+            r.get("args", {}).get("path", "")
+            for r in turn_tool_results
+            if r["name"] in _READ_TOOLS
+          ]
+          user_task = next(
+            (m["content"] for m in reversed(messages)
+             if m.get("role") == "user"
+             and re.search(r'[　-鿿]', m.get("content", ""))),
+            ""
+          )
+          file_hint = f" {read_paths[0]}" if read_paths else ""
+          task_hint = f" Task: 「{user_task}」." if user_task else ""
           nudge_msg = (
-            "Do not ask the user any questions. "
-            "You have already read the file. Fix the issue described in the user's request "
-            "and save the corrected version using write_file with an absolute path."
+            f"Do NOT ask the user any questions.{task_hint}"
+            f" The file{file_hint} content is already in the tool results above."
+            " Immediately call write_file with the complete corrected file content."
           )
         else:
           nudge_msg = "Now write that code to a file using write_file."
