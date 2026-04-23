@@ -285,7 +285,17 @@ async def agent_turn(
       last_had_error = False
       is_empty = not (msg.content or "").strip()
       is_text_tool_call = looks_like_text_tool_call(msg.content or "", tool_names)
-      if nudge_count < 2 and (had_error or "```" in (msg.content or "") or is_empty or is_text_tool_call):
+      _READ_TOOLS = {"read_text_file", "read_file", "read_multiple_files"}
+      _WRITE_TOOLS = {"write_file", "edit_file"}
+      read_without_write = (
+        any(r["name"] in _READ_TOOLS for r in turn_tool_results)
+        and not any(r["name"] in _WRITE_TOOLS for r in turn_tool_results)
+        and bool(re.search(r"承知|了解|かしこまり", msg.content or ""))
+      )
+      if nudge_count < 2 and (
+        had_error or "```" in (msg.content or "")
+        or is_empty or is_text_tool_call or read_without_write
+      ):
         nudge_count += 1
         if had_error:
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
@@ -295,6 +305,11 @@ async def agent_turn(
           nudge_msg = (
             "You wrote a tool call as plain text. If you need that tool, call it through the tool API. "
             "If the task is complete, write the final Japanese answer as text now."
+          )
+        elif read_without_write:
+          nudge_msg = (
+            "You read the file but did not modify it. "
+            "Fix the issue now and save the corrected file using write_file."
           )
         else:
           nudge_msg = "Now write that code to a file using write_file."
