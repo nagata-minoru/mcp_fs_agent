@@ -126,6 +126,29 @@ class TestCommitMessageFallback:
 
     assert synthesize_commit_message(tool_results) == "コミットメッセージの提案: MCPツール結果の処理を改善"
 
+  def test_未追跡ファイルのみの場合もメッセージを生成する(self):
+    """git diff が空でも未追跡ファイルがあればコミットメッセージを提案することを確認する。"""
+    tool_results = [
+      {"name": "shell_execute", "args": {"command": ["git", "status", "--short"]}, "content": "?? tetris_concept.py"},
+      {"name": "shell_execute", "args": {"command": ["git", "diff"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+    result = synthesize_commit_message(tool_results)
+    assert result == "コミットメッセージの提案: tetris_concept.pyを更新"
+
+  def test_クリーンなstatusは変更なしと判定する(self):
+    """git status が 'nothing to commit' を含む場合は変更なしを返すことを確認する。"""
+    tool_results = [
+      {
+        "name": "shell_execute",
+        "args": {"command": ["git", "status"]},
+        "content": "On branch main\nnothing to commit, working tree clean",
+      },
+      {"name": "shell_execute", "args": {"command": ["git", "diff"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+    assert synthesize_commit_message(tool_results) == "コミットする変更がありません。"
+
 class TestExtractFilenameFromMessages:
   """extract_filename_from_messages() のテスト。"""
 

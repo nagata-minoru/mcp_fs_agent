@@ -36,7 +36,7 @@ SYSTEM_PROMPT = (
   f"The working directory is {CWD}. "
   "NEVER ask the user any questions — if you need information, use tools to get it yourself. "
   "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
-  "To create a git commit message: call shell_execute(['git', 'status']), "
+  "To create a git commit message: call shell_execute(['git', 'status', '--short']), "
   "then shell_execute(['git', 'diff']), then shell_execute(['git', 'diff', '--cached']). "
   "Based on the output, reply: 「コミットメッセージの提案: <message>」. "
   "If there are no changes, reply: 「コミットする変更がありません。」. "
@@ -128,15 +128,26 @@ def summarize_changed_paths(status_output: str) -> list[str]:
     paths.append(path)
   return paths
 
+def _has_git_changes(outputs: dict) -> bool:
+  """git 出力から実際にコミットできる変更があるか判定する。"""
+  diff = outputs.get(("git", "diff"), "")
+  cached = outputs.get(("git", "diff", "--cached"), "")
+  if diff.strip() or cached.strip():
+    return True
+  status = (outputs.get(("git", "status", "--short"), "")
+            or outputs.get(("git", "status"), ""))
+  return bool(status.strip()) and "nothing to commit, working tree clean" not in status
+
 def synthesize_commit_message(tool_results: list[dict]) -> str | None:
   """git 出力から最低限妥当な日本語コミットメッセージを生成する。"""
   outputs = extract_git_outputs(tool_results)
-  status_output = outputs.get(("git", "status"), "") or outputs.get(("git", "status", "--short"), "")
+  status_output = (outputs.get(("git", "status", "--short"), "")
+                   or outputs.get(("git", "status"), ""))
   diff_output = outputs.get(("git", "diff"), "")
   cached_diff_output = outputs.get(("git", "diff", "--cached"), "")
   combined_diff = f"{diff_output}\n{cached_diff_output}"
 
-  if not status_output.strip() and not combined_diff.strip():
+  if not _has_git_changes(outputs):
     return "コミットする変更がありません。"
 
   if "mcp_fs_agent.py" in combined_diff and any(
@@ -165,8 +176,10 @@ def should_replace_commit_response(content: str, tool_results: list[dict]) -> bo
   stripped = content.strip()
   if not stripped:
     return True
-  if stripped.startswith("コミットメッセージの提案:") or stripped == "コミットする変更がありません。":
+  if stripped.startswith("コミットメッセージの提案:"):
     return False
+  if stripped == "コミットする変更がありません。":
+    return _has_git_changes(extract_git_outputs(tool_results))
   return (
     any(marker in stripped for marker in _GENERIC_RESPONSE_MARKERS)
     or bool(_TEXT_TOOL_CALL_RE.match(stripped))
