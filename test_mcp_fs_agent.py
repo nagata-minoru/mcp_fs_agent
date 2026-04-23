@@ -4,6 +4,7 @@ from mcp_fs_agent import (
   mcp_tools_to_ollama, run, agent_turn, execute_tool_call,
   normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages, SYSTEM_PROMPT,
   format_tool_message, looks_like_text_tool_call, synthesize_commit_message,
+  is_commit_execution_request, strip_ansi,
 )
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
@@ -79,6 +80,39 @@ class TestNormalizeShellArgs:
     args = {"command": ["ls -la /tmp"], "directory": "/tmp"}
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["ls", "-la", "/tmp"]
+
+class TestCommitExecution:
+  """コミット実行依頼とメッセージ提案依頼の判定テスト。"""
+
+  def test_コミットしてくださいは実行依頼(self):
+    """「コミットしてください」はコミット実行依頼と判定されることを確認する。"""
+    messages = [{"role": "user", "content": "コミットしてください"}]
+    assert is_commit_execution_request(messages)
+
+  def test_コミットメッセージを作ってはメッセージ提案依頼(self):
+    """「コミットメッセージを作って」はコミット実行依頼ではないことを確認する。"""
+    messages = [{"role": "user", "content": "gitのコミットメッセージを日本語で作ってください"}]
+    assert not is_commit_execution_request(messages)
+
+  def test_コミット無関係はFalse(self):
+    """コミットに関係しないメッセージは実行依頼ではないことを確認する。"""
+    messages = [{"role": "user", "content": "ファイルを作って"}]
+    assert not is_commit_execution_request(messages)
+
+class TestStripAnsi:
+  """ANSI エスケープシーケンス除去のテスト。"""
+
+  def test_ANSIカラーコードを除去する(self):
+    """ANSI カラーコードが除去されることを確認する。"""
+    assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+
+  def test_iTerm2シェル統合コードを除去する(self):
+    """iTerm2 のエスケープシーケンスが除去されることを確認する。"""
+    assert strip_ansi("\x1b]337;RemoteHost=user@host\x07M file.py") == "M file.py"
+
+  def test_通常テキストはそのまま(self):
+    """エスケープシーケンスを含まないテキストはそのまま返されることを確認する。"""
+    assert strip_ansi("normal text") == "normal text"
 
 class TestToolResultFormatting:
   """ツール結果をモデルに戻す形式のテスト。"""

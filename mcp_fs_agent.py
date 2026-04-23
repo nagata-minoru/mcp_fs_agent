@@ -14,6 +14,7 @@ import py_compile
 import re
 import readline  # noqa: F401
 import shlex
+import subprocess
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -24,6 +25,8 @@ _FILENAME_RE = re.compile(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
 _COMMIT_REQUEST_RE = re.compile(r"(コミット|commit)", re.IGNORECASE)
+_COMMIT_MESSAGE_ONLY_RE = re.compile(r"(コミットメッセージ|commit message)", re.IGNORECASE)
+_ANSI_RE = re.compile(r'\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*\x07|[^[\]])')
 _GENERIC_RESPONSE_MARKERS = (
   "何かご依頼",
   "お答えします",
@@ -36,9 +39,9 @@ SYSTEM_PROMPT = (
   f"The working directory is {CWD}. "
   "NEVER ask the user any questions — if you need information, use tools to get it yourself. "
   "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
-  "To create a git commit message: call shell_execute(['git', 'status', '--short']), "
-  "then shell_execute(['git', 'diff']), then shell_execute(['git', 'diff', '--cached']). "
-  "Based on the output, reply: 「コミットメッセージの提案: <message>」. "
+  "To commit: call shell_execute(['git', 'status', '--short']), shell_execute(['git', 'diff']), "
+  "then shell_execute(['git', 'add', '-A']), then shell_execute(['git', 'commit', '-m', '<Japanese message>']). "
+  "To only propose a commit message without committing, reply: 「コミットメッセージの提案: <message>」. "
   "If there are no changes, reply: 「コミットする変更がありません。」. "
   "Always use absolute paths. "
   "To create or overwrite a file, use the write_file tool. "
@@ -86,11 +89,38 @@ def normalize_shell_args(name: str, args: dict) -> dict:
   return {**args, "command": normalized}
 
 def is_commit_message_request(messages: list[dict]) -> bool:
-  """直近のユーザーメッセージがコミットメッセージ作成依頼か判定する。"""
+  """直近のユーザーメッセージがコミット関連依頼か判定する。"""
   for msg in reversed(messages):
     if msg.get("role") == "user":
       return bool(_COMMIT_REQUEST_RE.search(msg.get("content", "")))
   return False
+
+def is_commit_execution_request(messages: list[dict]) -> bool:
+  """コミット実行依頼か判定する（メッセージ提案のみの依頼を除外する）。"""
+  for msg in reversed(messages):
+    if msg.get("role") == "user":
+      content = msg.get("content", "")
+      if not _COMMIT_REQUEST_RE.search(content):
+        return False
+      return not _COMMIT_MESSAGE_ONLY_RE.search(content)
+  return False
+
+def strip_ansi(text: str) -> str:
+  """ANSI エスケープシーケンスとターミナル制御コードを除去する。"""
+  return _ANSI_RE.sub('', text)
+
+def perform_git_commit(message: str, cwd: str) -> str:
+  """git add -A && git commit を実行してコミット結果を返す。"""
+  add = subprocess.run(['git', 'add', '-A'], capture_output=True, text=True, cwd=cwd)
+  if add.returncode != 0:
+    return f"git add 失敗: {add.stderr.strip()}"
+  commit = subprocess.run(
+    ['git', 'commit', '-m', message],
+    capture_output=True, text=True, cwd=cwd
+  )
+  if commit.returncode != 0:
+    return f"git commit 失敗: {commit.stderr.strip()}"
+  return commit.stdout.strip()
 
 def format_tool_message(name: str, args: dict, content: str) -> str:
   """モデルが次ターンで参照しやすいようにツール結果を明示的に整形する。"""
@@ -208,7 +238,7 @@ async def execute_tool_call(
   print(f"  [Tool] {name}({args})")
   session = tool_registry.get(name, default_session)
   result = await session.call_tool(name, arguments=args)
-  content = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+  content = strip_ansi("\n".join(c.text for c in result.content if hasattr(c, "text")))
   if result.isError:
     print(f"  [Error] {content}")
     return content, True, content
@@ -243,7 +273,13 @@ async def agent_turn(
       if is_commit_message_request(messages) and should_replace_commit_response(msg.content or "", turn_tool_results):
         fallback = synthesize_commit_message(turn_tool_results)
         if fallback:
-          print(f"Assistant: {fallback}\n")
+          if (fallback != "コミットする変更がありません。"
+              and is_commit_execution_request(messages)):
+            commit_msg = fallback.removeprefix("コミットメッセージの提案: ")
+            result = perform_git_commit(commit_msg, CWD)
+            print(f"Assistant: コミットしました。\n{result}\n")
+          else:
+            print(f"Assistant: {fallback}\n")
           break
       had_error = last_had_error
       last_had_error = False
