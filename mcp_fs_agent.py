@@ -291,13 +291,17 @@ async def agent_turn(
       is_text_tool_call = looks_like_text_tool_call(msg.content or "", tool_names)
       _READ_TOOLS = {"read_text_file", "read_file", "read_multiple_files"}
       _WRITE_TOOLS = {"write_file", "edit_file"}
-      _QUESTION_MARKERS = ("ご指示", "教えてください", "お知らせください", "をお聞かせ", "しょうか")
+      _QUESTION_MARKERS = (
+        "ご指示", "教えてください", "お知らせください", "をお聞かせ", "しょうか",
+        "お申し付け",
+      )
       did_read = any(r["name"] in _READ_TOOLS for r in turn_tool_results)
       did_write = any(r["name"] in _WRITE_TOOLS for r in turn_tool_results)
       content_str = msg.content or ""
       is_asking = (
         bool(re.search(r"[？?]\s*$", content_str.strip()))
         or any(m in content_str for m in _QUESTION_MARKERS)
+        or any(m in content_str for m in _GENERIC_RESPONSE_MARKERS)
         or bool(re.search(r"承知|了解|かしこまり", content_str))
       )
       read_without_write = did_read and not did_write and is_asking
