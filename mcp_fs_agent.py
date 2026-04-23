@@ -23,7 +23,7 @@ MODEL = "gemma4:e2b"
 _FILENAME_RE = re.compile(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA-Z][a-zA-Z0-9]*(?![a-zA-Z0-9_\-])')
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
-_COMMIT_REQUEST_RE = re.compile(r"(コミットメッセージ|commit message|git commit)", re.IGNORECASE)
+_COMMIT_REQUEST_RE = re.compile(r"(コミット|commit)", re.IGNORECASE)
 _GENERIC_RESPONSE_MARKERS = (
   "何かご依頼",
   "お答えします",
