@@ -4,6 +4,7 @@ from mcp_fs_agent import (
   mcp_tools_to_ollama, run, agent_turn, execute_tool_call,
   normalize_shell_args, ALLOW_COMMANDS, extract_filename_from_messages, SYSTEM_PROMPT,
   format_tool_message, looks_like_text_tool_call, synthesize_commit_message,
+  is_commit_execution_request, strip_ansi,
 )
 
 def make_mcp_tool(name: str, description: str | None, input_schema: dict) -> MagicMock:
@@ -80,6 +81,39 @@ class TestNormalizeShellArgs:
     result = normalize_shell_args("shell_execute", args)
     assert result["command"] == ["ls", "-la", "/tmp"]
 
+class TestCommitExecution:
+  """コミット実行依頼とメッセージ提案依頼の判定テスト。"""
+
+  def test_コミットしてくださいは実行依頼(self):
+    """「コミットしてください」はコミット実行依頼と判定されることを確認する。"""
+    messages = [{"role": "user", "content": "コミットしてください"}]
+    assert is_commit_execution_request(messages)
+
+  def test_コミットメッセージを作ってはメッセージ提案依頼(self):
+    """「コミットメッセージを作って」はコミット実行依頼ではないことを確認する。"""
+    messages = [{"role": "user", "content": "gitのコミットメッセージを日本語で作ってください"}]
+    assert not is_commit_execution_request(messages)
+
+  def test_コミット無関係はFalse(self):
+    """コミットに関係しないメッセージは実行依頼ではないことを確認する。"""
+    messages = [{"role": "user", "content": "ファイルを作って"}]
+    assert not is_commit_execution_request(messages)
+
+class TestStripAnsi:
+  """ANSI エスケープシーケンス除去のテスト。"""
+
+  def test_ANSIカラーコードを除去する(self):
+    """ANSI カラーコードが除去されることを確認する。"""
+    assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+
+  def test_iTerm2シェル統合コードを除去する(self):
+    """iTerm2 のエスケープシーケンスが除去されることを確認する。"""
+    assert strip_ansi("\x1b]337;RemoteHost=user@host\x07M file.py") == "M file.py"
+
+  def test_通常テキストはそのまま(self):
+    """エスケープシーケンスを含まないテキストはそのまま返されることを確認する。"""
+    assert strip_ansi("normal text") == "normal text"
+
 class TestToolResultFormatting:
   """ツール結果をモデルに戻す形式のテスト。"""
 
@@ -125,6 +159,29 @@ class TestCommitMessageFallback:
     ]
 
     assert synthesize_commit_message(tool_results) == "コミットメッセージの提案: MCPツール結果の処理を改善"
+
+  def test_未追跡ファイルのみの場合もメッセージを生成する(self):
+    """git diff が空でも未追跡ファイルがあればコミットメッセージを提案することを確認する。"""
+    tool_results = [
+      {"name": "shell_execute", "args": {"command": ["git", "status", "--short"]}, "content": "?? tetris_concept.py"},
+      {"name": "shell_execute", "args": {"command": ["git", "diff"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+    result = synthesize_commit_message(tool_results)
+    assert result == "コミットメッセージの提案: tetris_concept.pyを更新"
+
+  def test_クリーンなstatusは変更なしと判定する(self):
+    """git status が 'nothing to commit' を含む場合は変更なしを返すことを確認する。"""
+    tool_results = [
+      {
+        "name": "shell_execute",
+        "args": {"command": ["git", "status"]},
+        "content": "On branch main\nnothing to commit, working tree clean",
+      },
+      {"name": "shell_execute", "args": {"command": ["git", "diff"]}, "content": ""},
+      {"name": "shell_execute", "args": {"command": ["git", "diff", "--cached"]}, "content": ""},
+    ]
+    assert synthesize_commit_message(tool_results) == "コミットする変更がありません。"
 
 class TestExtractFilenameFromMessages:
   """extract_filename_from_messages() のテスト。"""
@@ -574,7 +631,9 @@ class TestRun:
     ):
       await run()
 
-    fs_session.call_tool.assert_called_once_with("read_file", arguments={"path": "hello.txt"})
+    called_args = fs_session.call_tool.call_args
+    assert called_args[0][0] == "read_file"
+    assert called_args[1]["arguments"]["path"].endswith("hello.txt")
     sh_session.call_tool.assert_not_called()
 
   @pytest.mark.asyncio

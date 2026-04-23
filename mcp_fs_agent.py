@@ -14,6 +14,7 @@ import py_compile
 import re
 import readline  # noqa: F401
 import shlex
+import subprocess
 from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -23,7 +24,9 @@ MODEL = "gemma4:e2b"
 _FILENAME_RE = re.compile(r'(?<![a-zA-Z0-9_\-])[a-zA-Z0-9][a-zA-Z0-9_\-]*\.[a-zA-Z][a-zA-Z0-9]*(?![a-zA-Z0-9_\-])')
 CWD = os.getcwd()
 ALLOW_COMMANDS = os.environ.get("ALLOW_COMMANDS", "ls,cat,pwd,grep,wc,find,echo,python,uv,git,ps,kill,bash")
-_COMMIT_REQUEST_RE = re.compile(r"(コミットメッセージ|commit message|git commit)", re.IGNORECASE)
+_COMMIT_REQUEST_RE = re.compile(r"(コミット|commit)", re.IGNORECASE)
+_COMMIT_MESSAGE_ONLY_RE = re.compile(r"(コミットメッセージ|commit message)", re.IGNORECASE)
+_ANSI_RE = re.compile(r'\x1b(?:\[[0-9;]*[A-Za-z]|\][^\x07]*\x07|[^[\]])')
 _GENERIC_RESPONSE_MARKERS = (
   "何かご依頼",
   "お答えします",
@@ -36,9 +39,9 @@ SYSTEM_PROMPT = (
   f"The working directory is {CWD}. "
   "NEVER ask the user any questions — if you need information, use tools to get it yourself. "
   "You are an autonomous agent. Always use tools to complete tasks — never just explain or describe what you would do. "
-  "To create a git commit message: call shell_execute(['git', 'status']), "
-  "then shell_execute(['git', 'diff']), then shell_execute(['git', 'diff', '--cached']). "
-  "Based on the output, reply: 「コミットメッセージの提案: <message>」. "
+  "NEVER run git commands unless the user explicitly uses the word 'コミット' or 'commit'. "
+  "When asked to commit: call shell_execute(['git', 'status', '--short']), shell_execute(['git', 'diff']), "
+  "then shell_execute(['git', 'add', '-A']), then shell_execute(['git', 'commit', '-m', '<Japanese message>']). "
   "If there are no changes, reply: 「コミットする変更がありません。」. "
   "Always use absolute paths. "
   "To create or overwrite a file, use the write_file tool. "
@@ -86,11 +89,38 @@ def normalize_shell_args(name: str, args: dict) -> dict:
   return {**args, "command": normalized}
 
 def is_commit_message_request(messages: list[dict]) -> bool:
-  """直近のユーザーメッセージがコミットメッセージ作成依頼か判定する。"""
+  """直近のユーザーメッセージがコミット関連依頼か判定する。"""
   for msg in reversed(messages):
     if msg.get("role") == "user":
       return bool(_COMMIT_REQUEST_RE.search(msg.get("content", "")))
   return False
+
+def is_commit_execution_request(messages: list[dict]) -> bool:
+  """コミット実行依頼か判定する（メッセージ提案のみの依頼を除外する）。"""
+  for msg in reversed(messages):
+    if msg.get("role") == "user":
+      content = msg.get("content", "")
+      if not _COMMIT_REQUEST_RE.search(content):
+        return False
+      return not _COMMIT_MESSAGE_ONLY_RE.search(content)
+  return False
+
+def strip_ansi(text: str) -> str:
+  """ANSI エスケープシーケンスとターミナル制御コードを除去する。"""
+  return _ANSI_RE.sub('', text)
+
+def perform_git_commit(message: str, cwd: str) -> str:
+  """git add -A && git commit を実行してコミット結果を返す。"""
+  add = subprocess.run(['git', 'add', '-A'], capture_output=True, text=True, cwd=cwd)
+  if add.returncode != 0:
+    return f"git add 失敗: {add.stderr.strip()}"
+  commit = subprocess.run(
+    ['git', 'commit', '-m', message],
+    capture_output=True, text=True, cwd=cwd
+  )
+  if commit.returncode != 0:
+    return f"git commit 失敗: {commit.stderr.strip()}"
+  return commit.stdout.strip()
 
 def format_tool_message(name: str, args: dict, content: str) -> str:
   """モデルが次ターンで参照しやすいようにツール結果を明示的に整形する。"""
@@ -128,15 +158,26 @@ def summarize_changed_paths(status_output: str) -> list[str]:
     paths.append(path)
   return paths
 
+def _has_git_changes(outputs: dict) -> bool:
+  """git 出力から実際にコミットできる変更があるか判定する。"""
+  diff = outputs.get(("git", "diff"), "")
+  cached = outputs.get(("git", "diff", "--cached"), "")
+  if diff.strip() or cached.strip():
+    return True
+  status = (outputs.get(("git", "status", "--short"), "")
+            or outputs.get(("git", "status"), ""))
+  return bool(status.strip()) and "nothing to commit, working tree clean" not in status
+
 def synthesize_commit_message(tool_results: list[dict]) -> str | None:
   """git 出力から最低限妥当な日本語コミットメッセージを生成する。"""
   outputs = extract_git_outputs(tool_results)
-  status_output = outputs.get(("git", "status"), "") or outputs.get(("git", "status", "--short"), "")
+  status_output = (outputs.get(("git", "status", "--short"), "")
+                   or outputs.get(("git", "status"), ""))
   diff_output = outputs.get(("git", "diff"), "")
   cached_diff_output = outputs.get(("git", "diff", "--cached"), "")
   combined_diff = f"{diff_output}\n{cached_diff_output}"
 
-  if not status_output.strip() and not combined_diff.strip():
+  if not _has_git_changes(outputs):
     return "コミットする変更がありません。"
 
   if "mcp_fs_agent.py" in combined_diff and any(
@@ -165,8 +206,10 @@ def should_replace_commit_response(content: str, tool_results: list[dict]) -> bo
   stripped = content.strip()
   if not stripped:
     return True
-  if stripped.startswith("コミットメッセージの提案:") or stripped == "コミットする変更がありません。":
+  if stripped.startswith("コミットメッセージの提案:"):
     return False
+  if stripped == "コミットする変更がありません。":
+    return _has_git_changes(extract_git_outputs(tool_results))
   return (
     any(marker in stripped for marker in _GENERIC_RESPONSE_MARKERS)
     or bool(_TEXT_TOOL_CALL_RE.match(stripped))
@@ -178,6 +221,11 @@ def looks_like_text_tool_call(content: str, tool_names: set[str]) -> bool:
   if not stripped:
     return False
   return any(re.match(rf"^{re.escape(name)}\s*\(", stripped) for name in tool_names)
+
+def extract_code_from_response(content: str) -> str | None:
+  """レスポンスの最初のコードブロックを抽出する。"""
+  match = re.search(r'```(?:\w+)?\n(.*?)```', content, re.DOTALL)
+  return match.group(1) if match else None
 
 async def execute_tool_call(
   tc,
@@ -192,10 +240,14 @@ async def execute_tool_call(
     filename = extract_filename_from_messages(messages)
     args = {**args, "path": f"{CWD}/{filename}"}
     print(f"  [path補完] {args['path']}")
+  _PATH_TOOLS = {"read_text_file", "read_file", "read_media_file", "write_file", "edit_file"}
+  if name in _PATH_TOOLS and "path" in args and not os.path.isabs(str(args["path"])):
+    args = {**args, "path": os.path.join(CWD, args["path"])}
+    print(f"  [path補完] {args['path']}")
   print(f"  [Tool] {name}({args})")
   session = tool_registry.get(name, default_session)
   result = await session.call_tool(name, arguments=args)
-  content = "\n".join(c.text for c in result.content if hasattr(c, "text"))
+  content = strip_ansi("\n".join(c.text for c in result.content if hasattr(c, "text")))
   if result.isError:
     print(f"  [Error] {content}")
     return content, True, content
@@ -230,16 +282,91 @@ async def agent_turn(
       if is_commit_message_request(messages) and should_replace_commit_response(msg.content or "", turn_tool_results):
         fallback = synthesize_commit_message(turn_tool_results)
         if fallback:
-          print(f"Assistant: {fallback}\n")
+          if (fallback != "コミットする変更がありません。"
+              and is_commit_execution_request(messages)):
+            commit_msg = fallback.removeprefix("コミットメッセージの提案: ")
+            result = perform_git_commit(commit_msg, CWD)
+            print(f"Assistant: コミットしました。\n{result}\n")
+          else:
+            print(f"Assistant: {fallback}\n")
           break
       had_error = last_had_error
       last_had_error = False
       is_empty = not (msg.content or "").strip()
       is_text_tool_call = looks_like_text_tool_call(msg.content or "", tool_names)
-      if nudge_count < 2 and (had_error or "```" in (msg.content or "") or is_empty or is_text_tool_call):
+      _READ_TOOLS = {"read_text_file", "read_file", "read_multiple_files"}
+      _WRITE_TOOLS = {"write_file", "edit_file"}
+      _QUESTION_MARKERS = (
+        "ご指示", "教えてください", "お知らせください", "をお聞かせ", "しょうか",
+        "お申し付け",
+      )
+      did_read = any(r["name"] in _READ_TOOLS for r in turn_tool_results)
+      did_write = any(r["name"] in _WRITE_TOOLS for r in turn_tool_results)
+      content_str = msg.content or ""
+      is_asking = (
+        bool(re.search(r"[？?]\s*$", content_str.strip()))
+        or any(m in content_str for m in _QUESTION_MARKERS)
+        or any(m in content_str for m in _GENERIC_RESPONSE_MARKERS)
+        or bool(re.search(r"承知|了解|かしこまり", content_str))
+      )
+      read_without_write = did_read and not did_write and (is_asking or is_empty)
+      read_paths = [
+        r.get("args", {}).get("path", "")
+        for r in turn_tool_results
+        if r["name"] in _READ_TOOLS
+      ]
+      user_task = next(
+        (m["content"] for m in reversed(messages)
+         if m.get("role") == "user"
+         and re.search(r'[　-鿿]', m.get("content", ""))),
+        ""
+      )
+      has_code_block = "```" in (msg.content or "")
+      if has_code_block and read_paths:
+        code = extract_code_from_response(msg.content or "")
+        target_path = read_paths[0]
+        if code:
+          print(f"  [自動書き込み] {target_path}")
+          wr = await default_session.call_tool("write_file", arguments={"path": target_path, "content": code})
+          wr_content = strip_ansi("\n".join(c.text for c in wr.content if hasattr(c, "text")))
+          if target_path.endswith(".py"):
+            try:
+              py_compile.compile(target_path, doraise=True)
+            except py_compile.PyCompileError as e:
+              print(f"  [SyntaxError] {e}")
+              wr_content += f"\n(Warning: SyntaxError remains: {e})"
+          print(f"Assistant: ファイルを保存しました。\n{wr_content}\n")
+          break
+      if nudge_count < 2 and (
+        had_error or has_code_block
+        or is_empty or is_text_tool_call or read_without_write
+      ):
         nudge_count += 1
         if had_error:
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
+        elif read_without_write:
+          file_path = read_paths[0] if read_paths else ""
+          task_hint = f" Task: 「{user_task}」." if user_task else ""
+          file_content = next(
+            (r.get("content", "") for r in reversed(turn_tool_results)
+             if r["name"] in _READ_TOOLS),
+            ""
+          )
+          error_hint = ""
+          if file_path.endswith(".py"):
+            try:
+              py_compile.compile(file_path, doraise=True)
+            except py_compile.PyCompileError as e:
+              error_hint = f"\nSyntaxError: {e}"
+          content_section = (
+            f"\n\nFile content:\n```python\n{file_content}\n```"
+            if file_content else ""
+          )
+          nudge_msg = (
+            f"Do NOT ask the user any questions.{task_hint}{error_hint}"
+            f"{content_section}\n"
+            f"Fix the error and call write_file with path=\"{file_path}\" and the corrected content."
+          )
         elif is_empty:
           nudge_msg = "Your response was empty. Do NOT call any tools. Write your answer as text now."
         elif is_text_tool_call:
@@ -248,7 +375,8 @@ async def agent_turn(
             "If the task is complete, write the final Japanese answer as text now."
           )
         else:
-          nudge_msg = "Now write that code to a file using write_file."
+          target_path = read_paths[0] if read_paths else f"{CWD}/output.py"
+          nudge_msg = f"Do NOT output code as text. Call write_file with path=\"{target_path}\" and the corrected content RIGHT NOW."
         messages.append({"role": "user", "content": nudge_msg})
         continue
       print(f"Assistant: {msg.content}\n")
