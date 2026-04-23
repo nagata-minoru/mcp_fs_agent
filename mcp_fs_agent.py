@@ -324,12 +324,28 @@ async def agent_turn(
         if had_error:
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
         elif read_without_write:
-          file_hint = f" {read_paths[0]}" if read_paths else ""
+          file_path = read_paths[0] if read_paths else ""
+          file_hint = f" {file_path}" if file_path else ""
           task_hint = f" Task: 「{user_task}」." if user_task else ""
+          file_content = next(
+            (r.get("content", "") for r in reversed(turn_tool_results)
+             if r["name"] in _READ_TOOLS),
+            ""
+          )
+          error_hint = ""
+          if file_path.endswith(".py"):
+            try:
+              py_compile.compile(file_path, doraise=True)
+            except py_compile.PyCompileError as e:
+              error_hint = f"\nSyntaxError: {e}"
+          content_section = (
+            f"\n\nFile content:\n```python\n{file_content}\n```"
+            if file_content else ""
+          )
           nudge_msg = (
-            f"Do NOT ask the user any questions.{task_hint}"
-            f" The file{file_hint} content is already in the tool results above."
-            " Immediately call write_file with the complete corrected file content."
+            f"Do NOT ask the user any questions.{task_hint}{error_hint}"
+            f"{content_section}\n"
+            f"Fix the error and call write_file with path=\"{file_path}\" and the corrected content."
           )
         elif is_empty:
           nudge_msg = "Your response was empty. Do NOT call any tools. Write your answer as text now."
