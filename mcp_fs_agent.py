@@ -304,7 +304,18 @@ async def agent_turn(
         or any(m in content_str for m in _GENERIC_RESPONSE_MARKERS)
         or bool(re.search(r"承知|了解|かしこまり", content_str))
       )
-      read_without_write = did_read and not did_write and is_asking
+      read_without_write = did_read and not did_write and (is_asking or is_empty)
+      read_paths = [
+        r.get("args", {}).get("path", "")
+        for r in turn_tool_results
+        if r["name"] in _READ_TOOLS
+      ]
+      user_task = next(
+        (m["content"] for m in reversed(messages)
+         if m.get("role") == "user"
+         and re.search(r'[　-鿿]', m.get("content", ""))),
+        ""
+      )
       if nudge_count < 2 and (
         had_error or "```" in (msg.content or "")
         or is_empty or is_text_tool_call or read_without_write
@@ -312,31 +323,20 @@ async def agent_turn(
         nudge_count += 1
         if had_error:
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
-        elif is_empty:
-          nudge_msg = "Your response was empty. Do NOT call any tools. Write your answer as text now."
-        elif is_text_tool_call:
-          nudge_msg = (
-            "You wrote a tool call as plain text. If you need that tool, call it through the tool API. "
-            "If the task is complete, write the final Japanese answer as text now."
-          )
         elif read_without_write:
-          read_paths = [
-            r.get("args", {}).get("path", "")
-            for r in turn_tool_results
-            if r["name"] in _READ_TOOLS
-          ]
-          user_task = next(
-            (m["content"] for m in reversed(messages)
-             if m.get("role") == "user"
-             and re.search(r'[　-鿿]', m.get("content", ""))),
-            ""
-          )
           file_hint = f" {read_paths[0]}" if read_paths else ""
           task_hint = f" Task: 「{user_task}」." if user_task else ""
           nudge_msg = (
             f"Do NOT ask the user any questions.{task_hint}"
             f" The file{file_hint} content is already in the tool results above."
             " Immediately call write_file with the complete corrected file content."
+          )
+        elif is_empty:
+          nudge_msg = "Your response was empty. Do NOT call any tools. Write your answer as text now."
+        elif is_text_tool_call:
+          nudge_msg = (
+            "You wrote a tool call as plain text. If you need that tool, call it through the tool API. "
+            "If the task is complete, write the final Japanese answer as text now."
           )
         else:
           nudge_msg = "Now write that code to a file using write_file."
