@@ -222,6 +222,11 @@ def looks_like_text_tool_call(content: str, tool_names: set[str]) -> bool:
     return False
   return any(re.match(rf"^{re.escape(name)}\s*\(", stripped) for name in tool_names)
 
+def extract_code_from_response(content: str) -> str | None:
+  """レスポンスの最初のコードブロックを抽出する。"""
+  match = re.search(r'```(?:\w+)?\n(.*?)```', content, re.DOTALL)
+  return match.group(1) if match else None
+
 async def execute_tool_call(
   tc,
   tool_registry: dict[str, ClientSession],
@@ -316,8 +321,24 @@ async def agent_turn(
          and re.search(r'[　-鿿]', m.get("content", ""))),
         ""
       )
+      has_code_block = "```" in (msg.content or "")
+      if has_code_block and read_paths:
+        code = extract_code_from_response(msg.content or "")
+        target_path = read_paths[0]
+        if code:
+          print(f"  [自動書き込み] {target_path}")
+          wr = await default_session.call_tool("write_file", arguments={"path": target_path, "content": code})
+          wr_content = strip_ansi("\n".join(c.text for c in wr.content if hasattr(c, "text")))
+          if target_path.endswith(".py"):
+            try:
+              py_compile.compile(target_path, doraise=True)
+            except py_compile.PyCompileError as e:
+              print(f"  [SyntaxError] {e}")
+              wr_content += f"\n(Warning: SyntaxError remains: {e})"
+          print(f"Assistant: ファイルを保存しました。\n{wr_content}\n")
+          break
       if nudge_count < 2 and (
-        had_error or "```" in (msg.content or "")
+        had_error or has_code_block
         or is_empty or is_text_tool_call or read_without_write
       ):
         nudge_count += 1
@@ -325,7 +346,6 @@ async def agent_turn(
           nudge_msg = f"The previous tool call failed with: {last_error_content}. Fix the error and retry."
         elif read_without_write:
           file_path = read_paths[0] if read_paths else ""
-          file_hint = f" {file_path}" if file_path else ""
           task_hint = f" Task: 「{user_task}」." if user_task else ""
           file_content = next(
             (r.get("content", "") for r in reversed(turn_tool_results)
@@ -355,7 +375,8 @@ async def agent_turn(
             "If the task is complete, write the final Japanese answer as text now."
           )
         else:
-          nudge_msg = "Now write that code to a file using write_file."
+          target_path = read_paths[0] if read_paths else f"{CWD}/output.py"
+          nudge_msg = f"Do NOT output code as text. Call write_file with path=\"{target_path}\" and the corrected content RIGHT NOW."
         messages.append({"role": "user", "content": nudge_msg})
         continue
       print(f"Assistant: {msg.content}\n")
